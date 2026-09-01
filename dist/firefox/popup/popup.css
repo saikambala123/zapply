@@ -265,3 +265,6 @@ body {
   font-weight: 600;
 }
 .pending__save:hover { background: #4A21B0; }
+
+.pending__btn--save { color: #5B2AD6; font-weight: 600; }
+.pending__btn--save:hover { background: #F4F0FF; }

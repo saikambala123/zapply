@@ -1837,15 +1837,25 @@
   function holdAnswer(field, entry) {
     pendingSave.set(entry.question, { entry, field });
     try { field.el.classList.add("zapply-unsaved"); } catch {}
-    // The bar that used to appear here has been removed. It sat on top of
-    // the application while the applicant was still typing in it, and it
-    // asked for a decision about a question they had not finished
-    // answering. Pending answers are handed to the extension instead, where
-    // they are reviewed next to the saved answers they would join.
+    /**
+     * Held in extension storage, not in this Map.
+     *
+     * The Map is kept only to know which control on *this* page to outline and
+     * to clear the outline when the answer is saved. It cannot be the record:
+     * a Workday application navigates on every step, each navigation tears this
+     * content script down, and the Map went with it — so an answer edited on
+     * step 2 was gone before the applicant reached the popup. That is why
+     * saving answers looked like it did nothing.
+     *
+     * Storage survives navigation, reload and closing the tab, and the popup
+     * reads it from there, so it works even on a page where this script never
+     * loaded.
+     */
+    send({ type: "ZAPPLY_HOLD_ANSWERS", items: [entry] });
     publishPending();
   }
 
-  /** Hand the pending list to the popup's Saved Answers view. */
+  /** Nudge any open popup to re-read the held list. */
   function publishPending() {
     const items = Array.from(pendingSave.values()).map(({ entry }) => ({
       question: entry.question,
@@ -1862,15 +1872,16 @@
 
   function commitPendingAnswers() {
     const held = Array.from(pendingSave.values());
-    if (!held.length) return 0;
-    for (const { entry, field } of held) {
-      queueAnswer(entry);
+    for (const { field } of held) {
       try {
         field.el.classList.remove("zapply-unsaved");
         field.el.classList.add("zapply-saved");
       } catch {}
     }
     pendingSave.clear();
+    // Saving is done against storage, so it covers answers held on earlier
+    // steps of this application as well as the ones still on screen.
+    send({ type: "ZAPPLY_SAVE_HELD" });
     publishPending();
     return held.length;
   }
@@ -1912,9 +1923,11 @@
         const held = pendingSave.get(msg.question);
         if (held) { try { held.field.el.classList.remove("zapply-unsaved"); } catch {} }
         pendingSave.delete(msg.question);
+        send({ type: "ZAPPLY_DISCARD_HELD", questions: [msg.question] });
         publishPending();
       } else {
         discardPendingAnswers();
+        send({ type: "ZAPPLY_DISCARD_HELD" });
       }
       respond({ ok: true });
       return true;
@@ -1924,13 +1937,14 @@
 
   function commitOne(question) {
     const held = pendingSave.get(question);
-    if (!held) return 0;
-    queueAnswer(held.entry);
-    try {
-      held.field.el.classList.remove("zapply-unsaved");
-      held.field.el.classList.add("zapply-saved");
-    } catch {}
-    pendingSave.delete(question);
+    if (held) {
+      try {
+        held.field.el.classList.remove("zapply-unsaved");
+        held.field.el.classList.add("zapply-saved");
+      } catch {}
+      pendingSave.delete(question);
+    }
+    send({ type: "ZAPPLY_SAVE_HELD", questions: [question] });
     publishPending();
     return 1;
   }
@@ -2031,6 +2045,10 @@
         const current = String(readValue(field) ?? "").trim();
         if (!current || matchesWritten(el, current)) continue;
       }
+      // For a field the profile owns, only a proven edit counts. The sweep has
+      // no proof, so it leaves those alone rather than re-banking the value the
+      // profile just supplied.
+      if (field.rule && PROFILE_OWNED_KEYS.has(field.rule.key) && !el.__zapplyUserEdited) continue;
       try { recordAnswer(field, { userDriven: false }); } catch {}
     }
   }
@@ -2155,7 +2173,9 @@
     });
     (state.allFields ?? []).forEach((field) => {
       if (field.kind === "file") return;
-      if (field.rule && PROFILE_OWNED_KEYS.has(field.rule.key)) return;
+      // Profile-owned fields are watched as well; the sweep still refuses to
+      // bank one without a proven edit, so watching them costs nothing and is
+      // what makes a hand-typed correction to a name or address savable.
       captureOn(field);
     });
   }
@@ -2292,7 +2312,15 @@
         if (inPageChrome(el)) { el.__zapplyIgnored = true; return; }
         const label = M.deriveLabel(el);
         const rule = M.matchRule(el, label, RULES);
-        if (rule && PROFILE_OWNED_KEYS.has(rule.key)) { el.__zapplyIgnored = true; return; }
+        /**
+         * Profile-owned fields are watched too.
+         *
+         * They used to be ignored outright, which meant correcting a name, an
+         * address or a job row by hand produced nothing to save — and those are
+         * exactly the corrections worth keeping. They are still not *banked*
+         * automatically; they are held like any other edit, and the applicant
+         * decides. What they must not do is silently vanish.
+         */
         captureOn({ el, label, kind: M.fieldKind(el), rule });
       } catch {}
     }, true);

@@ -141,6 +141,21 @@ function maybeRefreshSession() {
   refreshSession();
 }
 
+/**
+ * The badge is the only thing that tells the applicant an answer is waiting.
+ *
+ * It counts both buckets: answers held after an edit and answers already queued
+ * for sync. Without it, held answers sat in storage with nothing anywhere on
+ * screen to say so — the applicant had to think to open the popup.
+ */
+async function refreshBadge() {
+  try {
+    const { heldAnswers, pendingResponses } = await store.get(["heldAnswers", "pendingResponses"]);
+    const total = (heldAnswers?.length ?? 0) + (pendingResponses?.length ?? 0);
+    setBadge(total ? String(Math.min(99, total)) : "", (heldAnswers?.length ?? 0) ? "#FFB020" : "#5B2AD6");
+  } catch {}
+}
+
 function setBadge(text, color = "#5B2AD6") {
   chrome.action.setBadgeText({ text });
   if (text) chrome.action.setBadgeBackgroundColor({ color });
@@ -193,7 +208,7 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
       }
 
       case "ZAPPLY_UNPAIR": {
-        await store.remove(["token", "user", "session", "sessionAt", "pendingResponses"]);
+        await store.remove(["token", "user", "session", "sessionAt", "pendingResponses", "heldAnswers"]);
         setBadge("");
         return respond({ ok: true });
       }
@@ -216,6 +231,70 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
       }
 
       /* --- pending saved answers: local until the user clicks Sync now --- */
+      /**
+       * --- held answers: edited on a page, not yet saved ---
+       *
+       * These used to live in a plain Map inside the content script. A Workday
+       * application navigates on every step, and each navigation tears the
+       * content script down and takes the Map with it — so by the time the
+       * applicant opened the popup there was nothing left to offer them, which
+       * is why saving an answer appeared to do nothing at all.
+       *
+       * They live here now, in the same storage as the sync queue, and survive
+       * navigation, reload and closing the tab. Nothing is uploaded from here:
+       * saving moves an answer into `pendingResponses`, which is still only
+       * sent on an explicit Sync.
+       */
+      case "ZAPPLY_HOLD_ANSWERS": {
+        const { heldAnswers } = await store.get("heldAnswers");
+        const merged = new Map((heldAnswers ?? []).map((r) => [queueKey(r.question), r]));
+        for (const r of (msg.items ?? [])) {
+          if (!r?.question || !String(r.answer ?? "").trim()) continue;
+          const key = queueKey(r.question);
+          if (!key) continue;
+          merged.set(key, { ...r, heldAt: Date.now() });
+        }
+        const held = Array.from(merged.values()).slice(-200);
+        await store.set({ heldAnswers: held });
+        await refreshBadge();
+        return respond({ ok: true, held: held.length });
+      }
+
+      case "ZAPPLY_GET_HELD": {
+        const { heldAnswers } = await store.get("heldAnswers");
+        return respond({ ok: true, data: { held: heldAnswers ?? [] } });
+      }
+
+      /** Move held answers into the sync queue. `questions` omitted = all. */
+      case "ZAPPLY_SAVE_HELD": {
+        const { heldAnswers, pendingResponses } = await store.get(["heldAnswers", "pendingResponses"]);
+        const wanted = msg.questions?.length
+          ? new Set(msg.questions.map((q) => queueKey(q)))
+          : null;
+        const held = heldAnswers ?? [];
+        const moving = held.filter((r) => !wanted || wanted.has(queueKey(r.question)));
+        const keeping = held.filter((r) => wanted && !wanted.has(queueKey(r.question)));
+
+        const merged = new Map((pendingResponses ?? []).map((r) => [queueKey(r.question), r]));
+        for (const r of moving) merged.set(queueKey(r.question), { ...r, queuedAt: Date.now() });
+
+        await store.set({
+          heldAnswers: keeping,
+          pendingResponses: Array.from(merged.values()).slice(-500),
+        });
+        await refreshBadge();
+        return respond({ ok: true, saved: moving.length });
+      }
+
+      case "ZAPPLY_DISCARD_HELD": {
+        const { heldAnswers } = await store.get("heldAnswers");
+        const wanted = msg.questions?.length ? new Set(msg.questions.map((q) => queueKey(q))) : null;
+        const keeping = wanted ? (heldAnswers ?? []).filter((r) => !wanted.has(queueKey(r.question))) : [];
+        await store.set({ heldAnswers: keeping });
+        await refreshBadge();
+        return respond({ ok: true });
+      }
+
       case "ZAPPLY_QUEUE_RESPONSES": {
         const { pendingResponses } = await store.get("pendingResponses");
         // Merged on the same normalisation the server uses, so re-answering one
@@ -229,7 +308,7 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
           merged.set(key, { ...r, queuedAt: Date.now() });
         }
         await store.set({ pendingResponses: Array.from(merged.values()).slice(-500) });
-        setBadge(String(Math.min(99, merged.size)), "#FFB020");
+        await refreshBadge();
         return respond({ ok: true, pending: merged.size });
       }
 

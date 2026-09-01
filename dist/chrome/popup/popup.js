@@ -176,33 +176,25 @@ try { chrome.storage.local.remove(["zapplyAccountPassword"]); } catch {}
  * in view.
  */
 async function heldAnswers() {
-  const tab = await activeTab();
-  if (!tab?.id) return [];
-  return new Promise((resolve) => {
-    try {
-      chrome.tabs.sendMessage(tab.id, { type: "ZAPPLY_PENDING_LIST" }, (res) => {
-        void chrome.runtime.lastError;
-        resolve(res?.items ?? []);
-      });
-    } catch {
-      resolve([]);
-    }
-  });
+  // Read from extension storage, not from the page. Asking the tab meant the
+  // list was empty whenever the content script had not loaded there or had been
+  // torn down by a step navigation — which on a Workday application is most of
+  // the time, and is why edited answers never appeared here.
+  const res = await send({ type: "ZAPPLY_GET_HELD" });
+  return res?.data?.held ?? [];
 }
 
 async function heldCommand(type, question) {
-  const tab = await activeTab();
-  if (!tab?.id) return;
-  await new Promise((resolve) => {
-    try {
-      chrome.tabs.sendMessage(tab.id, { type, question }, () => {
-        void chrome.runtime.lastError;
-        resolve();
-      });
-    } catch {
-      resolve();
-    }
+  const questions = question ? [question] : undefined;
+  await send({
+    type: type === "ZAPPLY_PENDING_SAVE" ? "ZAPPLY_SAVE_HELD" : "ZAPPLY_DISCARD_HELD",
+    questions,
   });
+  // Clear the on-page outline too, when there is a page to clear it on.
+  try {
+    const tab = await activeTab();
+    if (tab?.id) chrome.tabs.sendMessage(tab.id, { type, question }, () => void chrome.runtime.lastError);
+  } catch {}
   await refreshPending();
 }
 
@@ -232,6 +224,14 @@ async function refreshPending() {
     if (held.length) parts.push(`${held.length} unsaved`);
     if (queued.length) parts.push(`${queued.length} waiting to sync`);
     $("pending-note").textContent = parts.join(" · ");
+
+    // One click for the common case: several answers held across the steps of
+    // one application.
+    const saveAll = $("save-all-held");
+    if (saveAll) {
+      saveAll.hidden = held.length < 2;
+      saveAll.textContent = `Save all ${held.length}`;
+    }
     renderPendingList(queued, held);
   }
   return pending;
@@ -368,6 +368,10 @@ $("view-pending").addEventListener("click", () => {
   list.hidden = !open;
   $("view-pending").textContent = open ? "Hide" : "View";
   $("view-pending").setAttribute("aria-expanded", String(open));
+});
+
+$("save-all-held").addEventListener("click", async () => {
+  await heldCommand("ZAPPLY_PENDING_SAVE");
 });
 
 $("clear-pending").addEventListener("click", async () => {
