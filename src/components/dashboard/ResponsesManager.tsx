@@ -16,6 +16,53 @@ type Row = {
   lastDomain?: string;
 };
 
+
+/**
+ * One shape for every kind of saved answer.
+ *
+ * Sync stores text boxes, dropdowns, radio groups and checkbox groups in the
+ * same collection, but they were all rendered as a paragraph of prose — so a
+ * dropdown answer and a free-text answer were indistinguishable, and there was
+ * no way to see which option had been picked out of which list. The record
+ * already carries `inputType` and `options`; this just uses them.
+ */
+function typeLabel(inputType?: string) {
+  switch (inputType) {
+    case "select": return "dropdown";
+    case "radio": return "choice";
+    case "checkbox": return "checkboxes";
+    case "textarea": return "long text";
+    case "date": return "date";
+    default: return "text";
+  }
+}
+
+const CHOICE_TYPES = new Set(["select", "radio", "checkbox"]);
+
+/** The picked option(s), rendered as choices instead of a sentence. */
+function AnswerBody({ answer, inputType, options }: { answer: string; inputType?: string; options?: string[] }) {
+  if (!CHOICE_TYPES.has(inputType ?? "")) return <>{answer}</>;
+
+  const picked = String(answer ?? "")
+    .split(/\s*(?:,|;|\|)\s*/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!picked.length) return <>{answer}</>;
+
+  return (
+    <span className="flex flex-wrap items-center gap-1.5">
+      {picked.map((choice, i) => (
+        <span key={`${choice}-${i}`} className="chip border-brand-200 bg-brand-50 text-brand-600">
+          {choice}
+        </span>
+      ))}
+      {options && options.length > picked.length && (
+        <span className="text-[11px] text-ink-faint">of {options.length} options</span>
+      )}
+    </span>
+  );
+}
+
 export default function ResponsesManager({ initial }: { initial: Row[] }) {
   const [rows, setRows] = useState<Row[]>(initial);
   const [query, setQuery] = useState("");
@@ -119,7 +166,7 @@ export default function ResponsesManager({ initial }: { initial: Row[] }) {
                   <div className="min-w-0 flex-1">
                     <p className="text-[14.5px] font-semibold leading-snug">{r.question}</p>
                     <div className="mt-1 flex flex-wrap items-center gap-2">
-                      <span className="chip">{r.inputType ?? "text"}</span>
+                      <span className="chip">{typeLabel(r.inputType)}</span>
                       {r.source === "ai" && (
                         <span className="chip border-brand-200 bg-brand-50 text-brand-600">
                           <Sparkles className="h-2.5 w-2.5" /> drafted
@@ -184,7 +231,9 @@ export default function ResponsesManager({ initial }: { initial: Row[] }) {
                     onClick={() => { setEditing(r._id); setDraft(r.answer); }}
                     className="mt-2 block w-full rounded-xl border border-line bg-canvas px-3.5 py-2.5 text-left text-[13.5px] leading-relaxed text-ink-soft transition hover:border-brand-200 hover:bg-brand-50/40"
                   >
-                    {r.answer || <span className="italic text-ink-faint">No answer saved — click to write one</span>}
+                    {r.answer
+                      ? <AnswerBody answer={r.answer} inputType={r.inputType} options={r.options} />
+                      : <span className="italic text-ink-faint">No answer saved — click to write one</span>}
                   </button>
                 )}
               </li>

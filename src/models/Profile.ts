@@ -123,6 +123,13 @@ const ProfileSchema = new Schema(
       dateOfBirth: String,
       address: String,
       addressLine2: String,
+      // Oracle Recruiting and some Taleo sites ask for these separately. They
+      // are optional and stay blank unless the applicant fills them in — the
+      // extension will not guess a prefix (it is often a proxy for gender) or
+      // copy the surname into a second-surname box.
+      namePrefix: String,
+      nameSuffix: String,
+      secondLastName: String,
       city: String,
       state: String,
       zip: String,
