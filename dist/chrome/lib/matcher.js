@@ -756,10 +756,28 @@
 
     // Only short numeric boxes count. A wrapper that also holds a free-text
     // field is not a segmented date and must not be treated as one.
-    const segs = inputs.filter((node) => {
+    /**
+     * A segment is identified by what it says it is, not by having a cap.
+     *
+     * The filter used to require `maxlength` between 1 and 4. Workday's date
+     * spinbuttons do not carry one — they bound themselves with `aria-valuemax`
+     * — so every segment was dropped, detection returned null, and the whole
+     * "12/2022" string went into a single box again. That is the `MM/2022` and
+     * "Invalid Date: /2022" still showing after the first date fix.
+     *
+     * A cap is now only used to *reject*: anything that admits to holding more
+     * than four characters is a free-text field, not a date segment.
+     */
+    const looksLikeSegment = (node) => {
       const cap = Number(node.getAttribute?.("maxlength") ?? node.maxLength ?? 0);
+      if (cap > 4) return false;
+      const hint = `${node.getAttribute?.("data-automation-id") || ""} ${node.getAttribute?.("aria-label") || ""} ${node.getAttribute?.("placeholder") || ""} ${node.getAttribute?.("name") || ""} ${node.getAttribute?.("id") || ""}`;
+      if (/datesection|\bmonth\b|\byear\b|\bday\b|\bmm\b|\byyyy\b|\bdd\b/i.test(hint)) return true;
+      if (node.getAttribute?.("role") === "spinbutton") return true;
       return cap > 0 && cap <= 4;
-    });
+    };
+
+    const segs = inputs.filter(looksLikeSegment);
     if (segs.length < 2 || segs.length > 3) return null;
     if (!segs.includes(el) && !wrapper.contains(el)) return null;
 
@@ -769,7 +787,12 @@
       if (/year|\byyyy\b|\byy\b/i.test(hint)) return "year";
       if (/\bday\b|\bdd\b/i.test(hint)) return "day";
       const cap = Number(node.getAttribute?.("maxlength") ?? node.maxLength ?? 0);
-      return cap === 4 ? "year" : null;
+      if (cap === 4) return "year";
+      // No cap and no name: a segment whose upper bound is a four-digit number
+      // is the year box.
+      const max = Number(node.getAttribute?.("aria-valuemax") ?? 0);
+      if (max >= 1000) return "year";
+      return null;
     };
 
     const mapped = segs.map((node) => ({ node, kind: kindOf(node) }));
@@ -1028,6 +1051,34 @@
    * under a box containing "Azure DevOps Engineer" and nothing here noticed.
    * The retype that would have committed the value therefore never ran.
    */
+  /**
+   * Does the page insist on an answer here?
+   *
+   * Checked three ways because portals mark it differently: the native
+   * attribute, the ARIA one, and — Workday's way — an asterisk rendered next to
+   * the label with no attribute at all.
+   */
+  function isRequired(el) {
+    try {
+      if (el.required === true) return true;
+      if (el.getAttribute?.("aria-required") === "true") return true;
+      const described = `${el.getAttribute?.("aria-labelledby") || ""} ${el.getAttribute?.("aria-describedby") || ""}`.trim();
+      for (const id of described.split(/\s+/).filter(Boolean)) {
+        const node = document.getElementById(id);
+        if (node && /\*|\brequired\b/i.test(node.textContent || "")) return true;
+      }
+      let node = el.parentElement;
+      for (let depth = 0; node && depth < 3; depth++, node = node.parentElement) {
+        if (node.querySelectorAll?.("input, select, textarea").length > 1) break;
+        const label = node.querySelector?.("label, legend");
+        if (label && /\*|\brequired\b/i.test(label.textContent || "")) return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
   function flaggedInvalid(el) {
     try {
       if (el.getAttribute?.("aria-invalid") === "true") return true;
@@ -1255,7 +1306,38 @@
    * itself; firing another one afterwards ran the site's handler twice for a
    * single answer — a double write the user sees as the option blinking.
    */
+  /**
+   * Would clicking this open the operating system's file chooser?
+   *
+   * Choice controls are answered by clicking, and a `<label>` is clicked when
+   * the input itself will not take one. If that label happens to be bound to a
+   * file input — which on an application page means the résumé box — the click
+   * opens a native file dialog over the form. The applicant did not ask to
+   * upload anything; they asked for the form to be filled in.
+   *
+   * Nothing here ever needs to open that dialog: an attachment is set through
+   * DataTransfer, never through a picker. So any click that would reach a file
+   * input is refused outright.
+   */
+  function opensFilePicker(el) {
+    try {
+      if (!el) return false;
+      if (el.tagName === "INPUT" && String(el.type).toLowerCase() === "file") return true;
+      if (el.querySelector?.('input[type="file" i]')) return true;
+      const bound = el.getAttribute?.("for");
+      if (bound) {
+        const target = document.getElementById(bound);
+        if (target?.tagName === "INPUT" && String(target.type).toLowerCase() === "file") return true;
+      }
+      if (el.tagName === "LABEL" && el.control?.type === "file") return true;
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
   function clickCommitting(el, action) {
+    if (opensFilePicker(el)) return false;
     let sawChange = false;
     const onChange = () => { sawChange = true; };
     el.addEventListener("change", onChange, true);
@@ -1404,8 +1486,9 @@
         ? document.querySelector(`label[for="${CSS.escape(best.id)}"]`)
         : best.closest("label");
       clickCommitting(best, () => {
-        if (!best.checked) (labelEl || best).click?.();
-        if (!best.checked) best.click?.();
+        const clickable = opensFilePicker(labelEl) ? best : (labelEl || best);
+        if (!best.checked) clickable.click?.();
+        if (!best.checked && !opensFilePicker(best)) best.click?.();
       });
     }
 
@@ -2663,7 +2746,7 @@
   }
 
   global.ZAPPLY_MATCHER = {
-    retypeValue, flaggedInvalid,
+    retypeValue, flaggedInvalid, isRequired, opensFilePicker,
     choiceButtonGroup, isChoiceButton, choiceButtonSelected, choiceButtonGroupValue,
     deriveLabel,
     groupLabel,

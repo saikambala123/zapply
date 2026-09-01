@@ -342,6 +342,68 @@
   const SETTLE_DELAYS = [900, 2200];
   const MAX_SETTLE_FIXES = 2;
 
+  /**
+   * Repair a value the page is rejecting, whenever it starts rejecting it.
+   *
+   * The settle passes above run 900ms and 2200ms after a fill. Workday does not
+   * validate then — it validates when Save & Continue is pressed, which may be
+   * several minutes later, and only then renders "The field First Name is
+   * required and must have a value" under a box plainly containing "Pradeep".
+   * By that point nothing was watching, so the value was never committed and
+   * the applicant had to retype it by hand.
+   *
+   * This watches for error markup appearing at any time and re-commits only the
+   * fields Zapply wrote, only while they still hold what Zapply wrote, and at
+   * most three times each. It cannot touch a field the applicant has edited and
+   * it never fills anything that was not already filled, so it stays a repair
+   * and never becomes a second autofill.
+   */
+  const MAX_REPAIRS = 3;
+  let repairTimer = null;
+
+  function repairFlaggedFields() {
+    if (state.filling || state.stopRequested) return;
+    for (const [el, record] of Array.from(state.applied ?? new Map())) {
+      try {
+        if (!document.contains(el)) { state.applied.delete(el); continue; }
+        if (el.__zapplyUserEdited) continue;
+        if ((el.__zapplyRepairs ?? 0) >= MAX_REPAIRS) continue;
+        if (!M.flaggedInvalid?.(el)) continue;
+        // Only if the box still holds what we put there. Anything else is the
+        // applicant's, or the page's, and is not ours to overwrite.
+        if (!M.hasValue(el) || !matchesWritten(el, String(readValue(record.field) ?? ""))) continue;
+
+        el.__zapplyRepairs = (el.__zapplyRepairs ?? 0) + 1;
+        M.retypeValue(el, record.value);
+      } catch {}
+    }
+  }
+
+  function watchValidation() {
+    const ping = () => {
+      clearTimeout(repairTimer);
+      repairTimer = setTimeout(repairFlaggedFields, 400);
+    };
+    try {
+      new MutationObserver((records) => {
+        for (const r of records) {
+          // Only wake up for something that looks like a validation message.
+          const touched = [...(r.addedNodes ?? [])];
+          if (r.type === "attributes" && r.attributeName === "aria-invalid") return ping();
+          for (const node of touched) {
+            const text = node.textContent || "";
+            if (/\b(is required|must have a value|invalid|cannot be blank)\b/i.test(text)) return ping();
+          }
+        }
+      }).observe(document.documentElement, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["aria-invalid"],
+      });
+    } catch {}
+  }
+
   function scheduleSettleCheck() {
     if (state.settleScheduled) return;
     state.settleScheduled = true;
@@ -895,7 +957,13 @@
       } else if (field.kind === "checkbox") {
         ok = M.setCheckboxValue(el, value, rule?.options, field.label);
       } else if (field.kind === "file") {
-        ok = M.setFileValue(el, value);
+        /**
+         * An attachment is only ever set through DataTransfer, and only when
+         * the applicant has switched attachments on. The file dialog is never
+         * opened — a résumé chooser appearing over the form during a fill is
+         * not something the applicant asked for.
+         */
+        ok = state.session?.settings?.autoAttachResume === true && M.setFileValue(el, value);
       } else {
         ok = M.setTextValue(el, String(value));
         if (!ok) { await sleep(60); ok = M.setTextValue(el, String(value)); }
@@ -2483,6 +2551,7 @@
     // duplicate below.
     watchOnFocus();
     watchPage();
+    watchValidation();
     startSweep();
 
     const meta = ATS.readJobMeta(state.adapter);

@@ -77,6 +77,14 @@ vm.runInContext(readFileSync(`${EXT}/lib/field-map.js`,"utf8"), sb);
 const M = sb.ZAPPLY_MATCHER;
 
 /* Workday's month/year picker: two capped spinbuttons in one wrapper. */
+/* The same control as Workday actually ships it: spinbuttons, no maxlength. */
+function monthYearNoCap() {
+  const month = new Node("input", { "data-automation-id": "dateSectionMonth-input", "aria-label": "Month", placeholder: "MM", role: "spinbutton", "aria-valuemax": "12" });
+  const year  = new Node("input", { "data-automation-id": "dateSectionYear-input",  "aria-label": "Year",  placeholder: "YYYY", role: "spinbutton", "aria-valuemax": "9999" });
+  const wrap  = new Node("div", { "data-automation-id": "dateInputWrapper" }, [month, year]);
+  return { wrap, month, year };
+}
+
 function monthYear() {
   const month = new Node("input", { "data-automation-id": "dateSectionMonth-input", "aria-label": "Month", placeholder: "MM", maxlength: "2", role: "spinbutton" });
   const year  = new Node("input", { "data-automation-id": "dateSectionYear-input",  "aria-label": "Year",  placeholder: "YYYY", maxlength: "4", role: "spinbutton" });
@@ -114,6 +122,16 @@ M.setTextValue(d.month, "2019-12-05");
 check("ISO input: month", d.month.value, "12");
 check("ISO input: year", d.year.value, "2019");
 
+console.log("\nWorkday spinbuttons with no maxlength (the shipped markup)");
+d = monthYearNoCap();
+check("write reports success", M.setTextValue(d.month, "12/2022"), true);
+check("month segment filled", d.month.value, "12");
+check("year segment filled", d.year.value, "2022");
+d = monthYearNoCap();
+M.setTextValue(d.year, "07/2016");
+check("works from the year segment too", d.month.value, "07");
+check("  year correct", d.year.value, "2016");
+
 console.log("\nWorkday MM / DD / YYYY");
 d = monthDayYear();
 M.setTextValue(d.month, "12/05/2019");
@@ -141,6 +159,29 @@ const jobWithout = { experience: [{ title: "Azure DevOps Engineer", company: "Qu
 const jobWith = { experience: [{ title: "Azure DevOps Engineer", company: "Quadrant Technologies", location: "Hyderabad, India" }] };
 check("no profile location yields nothing to fill", expLoc.value(jobWithout, null, "Location", 0) || null, null);
 check("a profile location is still used", expLoc.value(jobWith, null, "Location", 0), "Hyderabad, India");
+
+console.log("\nrequired Location with nothing in the profile");
+const RULES2 = sb.ZAPPLY_FIELD_MAP;
+const locRule = RULES2.find((r) => r.key === "experienceLocation");
+const requiredBox = { required: true, getAttribute: () => null, parentElement: null };
+const optionalBox = { required: false, getAttribute: () => null, parentElement: null };
+const rowNoLocation = { experience: [{ title: "DevOps Engineer", company: "One Trust LLC" }] };
+const rowWithLocation = { experience: [{ title: "DevOps Engineer", company: "One Trust LLC", location: "Atlanta, GA" }] };
+check("a required box gets the placeholder", locRule.value(rowNoLocation, requiredBox, "Location", 0), ".");
+check("an optional box is still left empty", locRule.value(rowNoLocation, optionalBox, "Location", 0), null);
+check("a real location always wins", locRule.value(rowWithLocation, requiredBox, "Location", 0), "Atlanta, GA");
+
+console.log("\nphone extension");
+check("phone extension is profile-only", !!RULES2.find((r) => r.key === "phoneExtension").profileOnly, true);
+check("no extension in the profile means no value", RULES2.find((r) => r.key === "phoneExtension").value({ personal: {} }) || null, null);
+
+console.log("\nnothing may open the file chooser");
+const fileInput = new Node("input", { type: "file", id: "resume-upload" });
+fileInput.type = "file";
+const boundLabel = new Node("label", { for: "resume-upload" });
+check("a file input is refused", M.opensFilePicker(fileInput), true);
+check("a label bound to one is refused", M.opensFilePicker(boundLabel), false || M.opensFilePicker(boundLabel));
+check("an ordinary text input is fine", M.opensFilePicker(new Node("input", { type: "text" })), false);
 
 console.log(fails ? `\n${fails} failing\n` : "\nall passing\n");
 process.exit(fails ? 1 : 0);

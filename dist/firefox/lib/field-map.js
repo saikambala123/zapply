@@ -23,6 +23,10 @@
   const W = (p) => p?.workAuth ?? {};
   const C = (p) => p?.compensation ?? {};
   const E = (p) => p?.eeo ?? {};
+  // The matcher is loaded first by the manifest; guarded so the table still
+  // parses in a test harness that loads it on its own.
+  const M = (typeof window !== "undefined" && window.ZAPPLY_MATCHER) || {};
+
 
   /**
    * Words that mean the question is about somebody else.
@@ -524,6 +528,14 @@
       match: [/\b(phone|telephone|mobile)?\s*extension\b/i, /\bext\.?\s*(number|no)?\s*$/i],
       deny: [THIRD_PARTY],
       type: ["text", "tel", "number"],
+      /**
+       * Most people do not have one, and a wrong extension is worse than none —
+       * it is a number an employer will dial. Marked profile-only so a null
+       * stays a blank box instead of falling through to a saved answer from
+       * another form or to a drafted one.
+       */
+      profileOnly: true,
+      identity: true,
       value: (p) => P(p).phoneExtension || P(p).phoneExt || null,
     },
     {
@@ -805,7 +817,22 @@
        * recorded for that job or it is empty.
        */
       profileOnly: true,
-      value: (p, _el, _label, index) => latestJob(p, index).location,
+      /**
+       * The location recorded for that job — or, when the portal insists on an
+       * answer and the profile has none, a single dot.
+       *
+       * Leaving a required box empty stops the application at the next step, and
+       * the applicant cannot always say where a job from years ago was based.
+       * A dot is a deliberate placeholder: it satisfies the field, it is
+       * obviously not a real place, and it is trivial to spot and replace. It is
+       * used *only* where the box is required — an optional Location with
+       * nothing in the profile is still left empty.
+       */
+      value: (p, el, _label, index) => {
+        const stored = latestJob(p, index).location;
+        if (stored) return stored;
+        try { return M.isRequired?.(el) ? "." : null; } catch { return null; }
+      },
     },
     {
       key: "experienceLocationType",
