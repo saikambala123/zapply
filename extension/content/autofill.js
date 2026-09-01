@@ -64,6 +64,9 @@
     });
 
   chrome.runtime.onMessage.addListener((msg, _sender, respond) => {
+    if (msg?.type?.startsWith("ZAPPLY_PENDING")) {
+      if (handlePendingCommand(msg, respond)) return true;
+    }
     if (msg?.type === "ZAPPLY_RUN") {
       if (window.top !== window) return respond({ ok: true, data: { child: true } });
       relayToChildFrames("ZAPPLY_RUN");
@@ -977,17 +980,30 @@
     // the only way it stays genuinely blank.
     if (rule?.blank) return { status: "skipped", key: rule.key };
 
-    // An answer the applicant gave to *this exact question* outranks anything
-    // derived from the profile. It is the one place they have said, in their
-    // own words, what this question's answer is.
+    /**
+     * A saved answer to *this exact question* normally outranks a derived one —
+     * it is the applicant's own wording. But not when the profile already
+     * answers the field.
+     *
+     * The queue is the part of the system that gets poisoned. A corrupted
+     * Suffix banked off an Oracle form came back on every later application and
+     * beat the profile every time, so correcting the profile changed nothing and
+     * the applicant had no way to win. Where the profile has a value it is the
+     * answer; saved answers cover the questions the profile does not know about.
+     */
     const saved = canReuse ? findSavedAnswer(field) : null;
-    if (saved?.answer && saved.exact) {
+    let profileValue;
+    if (rule) {
+      try { profileValue = rule.value(profile, el, label, field.index ?? 0); } catch { profileValue = null; }
+    }
+    const profileAnswers = Boolean(profileValue) && profileValue !== "__RESUME__" && profileValue !== "__COVER_LETTER__";
+
+    if (saved?.answer && saved.exact && !profileAnswers) {
       return { status: "fill", key: "saved-answer", value: saved.answer, rule, source: "saved" };
     }
 
     if (rule) {
-      let value;
-      try { value = rule.value(profile, el, label, field.index ?? 0); } catch { value = null; }
+      const value = profileValue;
 
       if (value === "__RESUME__" || value === "__COVER_LETTER__") {
         // Documents are attached only when the applicant has asked for that.
@@ -1003,6 +1019,13 @@
       }
 
       if (value) return { status: "fill", key: rule.key, value, rule, source: "profile" };
+
+      /**
+       * A field whose only legitimate source is the profile. If the profile
+       * does not have it, it stays empty — no saved answer from a different
+       * application, no generated sentence. See `experienceLocation`.
+       */
+      if (rule.profileOnly) return { status: "skipped", key: rule.key };
 
       // No profile value: a close saved answer is the next best source.
       if (saved?.answer) {
@@ -1580,7 +1603,11 @@
           scoreLine +
           `${result.validationErrors?.length ? `${result.validationErrors.length} validation message${result.validationErrors.length === 1 ? "" : "s"} detected. ` : ""}` +
           "The highlighted questions were not safely answered.",
-        autoHide: false,
+        // Three seconds, then out of the way. It used to stay until dismissed,
+        // which parked it over the bottom of the form — exactly where the
+        // remaining questions are. The fields themselves stay highlighted, so
+        // nothing is lost when the pill goes.
+        autoHide: 3000,
       });
     } else if (!result.stopped) {
       overlay.hide();
@@ -1810,7 +1837,27 @@
   function holdAnswer(field, entry) {
     pendingSave.set(entry.question, { entry, field });
     try { field.el.classList.add("zapply-unsaved"); } catch {}
-    savePrompt.show();
+    // The bar that used to appear here has been removed. It sat on top of
+    // the application while the applicant was still typing in it, and it
+    // asked for a decision about a question they had not finished
+    // answering. Pending answers are handed to the extension instead, where
+    // they are reviewed next to the saved answers they would join.
+    publishPending();
+  }
+
+  /** Hand the pending list to the popup's Saved Answers view. */
+  function publishPending() {
+    const items = Array.from(pendingSave.values()).map(({ entry }) => ({
+      question: entry.question,
+      answer: entry.answer,
+      inputType: entry.inputType,
+      options: entry.options,
+      ats: entry.ats,
+      domain: entry.domain,
+    }));
+    try {
+      chrome.runtime.sendMessage({ type: "ZAPPLY_PENDING", items, url: location.href });
+    } catch {}
   }
 
   function commitPendingAnswers() {
@@ -1824,6 +1871,7 @@
       } catch {}
     }
     pendingSave.clear();
+    publishPending();
     return held.length;
   }
 
@@ -1832,60 +1880,92 @@
       try { field.el.classList.remove("zapply-unsaved"); } catch {}
     }
     pendingSave.clear();
+    publishPending();
   }
 
   /**
-   * The unsaved-answers bar. Deliberately separate from the fill status pill:
-   * one reports what a run did and disappears, the other has to stay put until
-   * the applicant decides, and the two must never overwrite each other.
+   * Saving and discarding are now driven from the extension popup, which is
+   * where the applicant can see a pending answer beside the saved ones it would
+   * join. Nothing about the hold model changed: an edit is still held, and still
+   * reaches Saved Answers only on an explicit action.
    */
-  const savePrompt = {
-    node: null,
-    ensure() {
-      if (this.node?.isConnected) return this.node;
-      const el = document.createElement("div");
-      el.className = "zapply-save";
-      el.innerHTML = `
-        <span class="zapply-save__text">
-          <span class="zapply-save__title"></span>
-          <span class="zapply-save__body">Save them to reuse on your next application.</span>
-        </span>
-        <button class="zapply-save__commit" type="button">Save answers</button>
-        <button class="zapply-save__dismiss" type="button" aria-label="Not now">Not now</button>`;
-      el.querySelector(".zapply-save__commit").addEventListener("click", () => {
-        const n = commitPendingAnswers();
-        const title = el.querySelector(".zapply-save__title");
-        const body = el.querySelector(".zapply-save__body");
-        title.textContent = `${n} answer${n === 1 ? "" : "s"} saved`;
-        body.textContent = "Sync from the Zapply popup to store them on your account.";
-        el.querySelector(".zapply-save__commit").hidden = true;
-        el.querySelector(".zapply-save__dismiss").textContent = "Close";
-        setTimeout(() => this.hide(), 3200);
+  function handlePendingCommand(msg, respond) {
+    if (msg.type === "ZAPPLY_PENDING_LIST") {
+      respond({
+        ok: true,
+        items: Array.from(pendingSave.values()).map(({ entry }) => ({
+          question: entry.question,
+          answer: entry.answer,
+          inputType: entry.inputType,
+          domain: entry.domain,
+        })),
       });
-      el.querySelector(".zapply-save__dismiss").addEventListener("click", () => {
+      return true;
+    }
+    if (msg.type === "ZAPPLY_PENDING_SAVE") {
+      const saved = msg.question ? commitOne(msg.question) : commitPendingAnswers();
+      respond({ ok: true, saved });
+      return true;
+    }
+    if (msg.type === "ZAPPLY_PENDING_DISCARD") {
+      if (msg.question) {
+        const held = pendingSave.get(msg.question);
+        if (held) { try { held.field.el.classList.remove("zapply-unsaved"); } catch {} }
+        pendingSave.delete(msg.question);
+        publishPending();
+      } else {
         discardPendingAnswers();
-        this.hide();
-      });
-      (document.body || document.documentElement).appendChild(el);
-      this.node = el;
-      return el;
-    },
-    show() {
-      const el = this.ensure();
-      const n = pendingSave.size;
-      if (!n) return this.hide();
-      el.querySelector(".zapply-save__title").textContent =
-        `${n} unsaved answer${n === 1 ? "" : "s"}`;
-      el.querySelector(".zapply-save__body").textContent =
-        "Save them to reuse on your next application.";
-      el.querySelector(".zapply-save__commit").hidden = false;
-      el.querySelector(".zapply-save__dismiss").textContent = "Not now";
-      el.classList.add("zapply-save--visible");
-    },
-    hide() {
-      this.node?.classList.remove("zapply-save--visible");
-    },
-  };
+      }
+      respond({ ok: true });
+      return true;
+    }
+    return false;
+  }
+
+  function commitOne(question) {
+    const held = pendingSave.get(question);
+    if (!held) return 0;
+    queueAnswer(held.entry);
+    try {
+      held.field.el.classList.remove("zapply-unsaved");
+      held.field.el.classList.add("zapply-saved");
+    } catch {}
+    pendingSave.delete(question);
+    publishPending();
+    return 1;
+  }
+
+  function worthSaving(field, answer) {
+    const el = field.el;
+    const text = String(answer ?? "");
+    if (!text) return false;
+
+    const cap = Number(el?.getAttribute?.("maxlength") ?? el?.maxLength ?? 0);
+    if (cap > 0 && text.length > cap) return false;
+
+    // The page's own verdict. If it is showing an error for this field, its
+    // current contents are by definition not an answer worth reusing.
+    try {
+      if (el.getAttribute?.("aria-invalid") === "true") return false;
+      const described = el.getAttribute?.("aria-describedby");
+      if (described) {
+        for (const id of described.split(/\s+/)) {
+          const node = document.getElementById(id);
+          const msg = node && M.visibleText(node);
+          if (msg && /\b(enter a maximum|maximum of \d+|too long|invalid|must be|required)\b/i.test(msg)) return false;
+        }
+      }
+    } catch {}
+
+    // A short structured box holding a sentence is a box something got wrong.
+    const structured = /suffix|prefix|title|initial|city|state|county|district|zip|postal|country|line\s*\d/i;
+    if (structured.test(field.label || "") && (text.length > 100 || /\.\s+\S/.test(text))) return false;
+
+    // The same fragment repeated back to back is the accumulation signature.
+    if (/(\b[A-Za-z]{4,}\b)\1/.test(text.replace(/\s+/g, ""))) return false;
+
+    return true;
+  }
 
   function recordAnswer(field, { userDriven }) {
     const el = field.el;
@@ -1910,6 +1990,7 @@
     if (question.length < 5 || question.length > 300) return false;
 
     el.__zapplyLastCaptured = answer;
+    if (!worthSaving(field, answer)) return false;
     holdAnswer(field, {
       question,
       answer,
@@ -2319,7 +2400,11 @@
       stop.hidden = !state.filling;
       el.classList.add("zapply-pill--visible");
       clearTimeout(this.timer);
-      if (autoHide) this.timer = setTimeout(() => this.hide(), 4500);
+      // `autoHide` may be a duration in milliseconds or just `true` for the
+      // default. It was previously a flag with one hard-coded delay, so a
+      // caller asking for three seconds silently got four and a half.
+      const delay = typeof autoHide === "number" ? autoHide : autoHide ? 4500 : 0;
+      if (delay > 0) this.timer = setTimeout(() => this.hide(), delay);
     },
     hide() {
       this.node?.classList.remove("zapply-pill--visible");

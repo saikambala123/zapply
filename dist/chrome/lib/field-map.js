@@ -278,6 +278,35 @@
    * Phrasings that ask whether the applicant can work *without* sponsorship,
    * which is the inverse of whether they require it.
    */
+  /**
+   * Work eligibility the profile already implies.
+   *
+   * An applicant who has recorded that they are a citizen or a permanent
+   * resident has told us they are authorised and need no sponsorship — asking
+   * them to answer it a second time in a separate box, and leaving the field
+   * blank until they do, is why so many eligibility questions came up empty and
+   * then got filled from somewhere worse.
+   *
+   * This is derivation, not inference: only statuses that settle the question
+   * outright are used, and an explicit stored answer always wins over it.
+   */
+  const SETTLED_STATUS =
+    /\b(u\.?s\.?\s*)?citizen\b|\bnational\b|\bpermanent\s*resident\b|\bgreen\s*card\b|\bcitizenship\b|\bindefinite\s*leave\b|\bright\s*to\s*work\b/i;
+
+  const authorizedFor = (p) => {
+    const stored = W(p).authorizedToWork;
+    if (stored) return stored;
+    const status = `${W(p).workAuthType ?? ""} ${W(p).visaStatus ?? ""} ${W(p).citizenship ?? ""}`;
+    return SETTLED_STATUS.test(status) ? "Yes" : null;
+  };
+
+  const sponsorshipFor = (p) => {
+    const stored = W(p).requireSponsorship;
+    if (stored) return stored;
+    const status = `${W(p).workAuthType ?? ""} ${W(p).visaStatus ?? ""} ${W(p).citizenship ?? ""}`;
+    return SETTLED_STATUS.test(status) ? "No" : null;
+  };
+
   const SPONSORSHIP_INVERTED =
     /\bwithout\s+(?:the\s+need\s+for\s+)?(?:any\s+)?(?:a\s+)?(?:visa\s+|employment\s+|work\s+|immigration\s+)?sponsor/i;
 
@@ -380,7 +409,8 @@
       identity: true,
       weight: 10,
       match: [/\b(last|family|sur)\s*name\b/i, /^lname$/i, /\blast_?name\b/i],
-      deny: [THIRD_PARTY, /reference|emergency|supervisor|manager|contact\s*person|spouse|parent/i],
+      // "Second Last Name" is a different family name, not this one repeated.
+      deny: [THIRD_PARTY, /reference|emergency|supervisor|manager|contact\s*person|spouse|parent/i, /\bsecond\s*(last\s*name|surname)\b|\bapellido\s*materno\b|\bmother'?s\s*(last\s*name|surname)\b/i],
       type: ["text"],
       value: (p) => P(p).lastName,
     },
@@ -507,6 +537,73 @@
     },
 
     /* ---------------- Address ---------------- */
+    /**
+     * Boxes an applicant leaves empty, claimed explicitly so nothing else fills
+     * them.
+     *
+     * Oracle Recruiting's contact section has Title, Suffix, Second Last Name,
+     * Address Line 3, Address Line 4 and Tax District. None has a profile value,
+     * so all six were unmatched — and an unmatched labelled field went to the
+     * answer model, which wrote "My address is in Bellevue, Washington, United
+     * States." into Suffix and the full formatted address into Tax District.
+     *
+     * `blank: true` stops the planner before saved answers and before the model,
+     * so these stay empty unless the applicant types in them.
+     */
+    {
+      key: "addressLineExtra",
+      weight: 12,
+      match: [/\b(address\s*)?line\s*([3-9]|\d{2,})\b/i, /\baddress\s*([3-9]|\d{2,})\b/i],
+      deny: [THIRD_PARTY],
+      blank: true,
+      type: ["text"],
+      value: () => null,
+    },
+    {
+      key: "taxDistrict",
+      weight: 12,
+      match: [/\b(tax|school|voting|sales)\s*district\b/i, /\btax\s*(locality|jurisdiction|area)\b/i],
+      deny: [THIRD_PARTY],
+      blank: true,
+      type: ["text", "select"],
+      value: () => null,
+    },
+    {
+      key: "nameSuffix",
+      weight: 12,
+      // Jr./Sr./III — a profile value if there is one, never anything else.
+      match: [/^suffix$/i, /\bname\s*suffix\b/i, /\bsuffix\s*(name)?\b/i],
+      deny: [THIRD_PARTY, /file|address|district|email/i],
+      identity: true,
+      type: ["text", "select"],
+      value: (p) => P(p).nameSuffix || null,
+    },
+    {
+      key: "namePrefix",
+      weight: 12,
+      // Mr./Ms./Dr. Left alone rather than guessed: it is frequently a proxy
+      // for gender, and the applicant has not told us.
+      match: [/^title$/i, /\bname\s*(title|prefix)\b/i, /^(prefix|salutation|honorific)$/i],
+      deny: [THIRD_PARTY, /job|position|role|current|desired|work|employment|degree|study/i],
+      identity: true,
+      type: ["text", "select", "radio"],
+      value: (p) => P(p).namePrefix || null,
+    },
+    {
+      key: "secondLastName",
+      weight: 12,
+      /**
+       * The Spanish/Portuguese second surname. It is not the applicant's last
+       * name repeated — copying `lastName` here, which is what the generic
+       * last-name rule did, states a family name they do not have.
+       */
+      match: [/\bsecond\s*(last\s*name|surname|apellido)\b/i, /\bapellido\s*materno\b/i, /\bmother'?s\s*(last\s*name|surname)\b/i],
+      deny: [THIRD_PARTY],
+      identity: true,
+      blank: true,
+      type: ["text"],
+      value: (p) => P(p).secondLastName || null,
+    },
     {
       key: "addressLine2",
       weight: 11,
@@ -526,8 +623,31 @@
     {
       key: "address",
       weight: 8,
-      match: [/\b(street|address\s*(line\s*)?1?|mailing\s*address|home\s*address)\b/i],
-      deny: [THIRD_PARTY, /e-?mail|city|state|zip|postal|country|line\s*2|apt|suite/i],
+      /**
+       * Line 1 only.
+       *
+       * `address\s*(line\s*)?1?` made the digit optional, so "address line"
+       * matched whatever number followed it. Only line 2 was denied, which left
+       * "Address Line 3" and "Address Line 4" collecting the street as well —
+       * Oracle Recruiting shows all four, so the street landed in three boxes.
+       * The number is now matched explicitly and anything above 1 is refused.
+       */
+      match: [
+        /\bstreet\b/i,
+        /\baddress\s*(line\s*)?1\b/i,
+        /^address$/i,
+        /\bmailing\s*address\b/i,
+        /\bhome\s*address\b/i,
+        /\bresidential\s*address\b/i,
+      ],
+      deny: [
+        THIRD_PARTY,
+        /e-?mail|city|state|zip|postal|country|apt|suite/i,
+        // Any address line other than the first, however it is numbered.
+        /\b(address\s*)?line\s*([2-9]|\d{2,})\b/i,
+        /\baddress\s*([2-9]|\d{2,})\b/i,
+        /\b(tax|school|voting|sales)\s*district\b/i,
+      ],
       type: ["text"],
       // Only the street when the form has its own City/State/Zip boxes, which
       // is nearly always; a single free-text address box still gets the lot.
@@ -671,6 +791,20 @@
         /\blocation\b.*\b(experience|employment|work\s*history|job\s*history)\b/i,
       ],
       type: ["text", "select"],
+      /**
+       * The location of a specific past job, or nothing.
+       *
+       * When a work-experience entry had no location in the profile this
+       * returned null and the field fell through to the answer model, which
+       * wrote "I am located in Jacksonville, Florida. I have 10 year" into the
+       * Location box of a 2016 role at Quadrant Technologies. That is not the
+       * applicant's answer and it is not even about the right thing — the model
+       * was asked "Location" and answered about where they live now.
+       *
+       * `profileOnly` stops the fall-through: this box is either the location
+       * recorded for that job or it is empty.
+       */
+      profileOnly: true,
       value: (p, _el, _label, index) => latestJob(p, index).location,
     },
     {
@@ -826,6 +960,7 @@
       weight: 8,
       match: [/\b(school|college|university|education)\b.*\blocation\b/i, /\blocation\b.*\b(school|college|university)\b/i],
       type: ["text", "select"],
+      profileOnly: true,
       value: (p, _el, _label, index) => latestSchool(p, index).location,
     },
     {
@@ -931,7 +1066,23 @@
       ],
       deny: [/sponsor/i],
       type: ["select", "radio", "text"],
-      value: (p) => W(p).authorizedToWork || null,   // never assumed: a claim about legal status
+      /**
+       * Profile or nothing.
+       *
+       * A wrong answer here is disqualifying: "No" to work authorisation, or
+       * "Yes" to needing sponsorship when the applicant does not, takes them out
+       * of the running before a human reads anything. Yet a null from this rule
+       * used to fall through to saved answers and then to the model — so one
+       * "No" banked on one portal was replayed as a negative answer across every
+       * application after it, which is the behaviour reported.
+       *
+       * There is no safe guess available here, and the model is the wrong tool
+       * for a legal declaration: it can only infer, and an inferred immigration
+       * status stated to an employer is a liability. Unanswered means the field
+       * is left empty and highlighted for the applicant.
+       */
+      profileOnly: true,
+      value: (p) => authorizedFor(p),   // stored answer, or a status that settles it
       options: { Yes: ["yes", "i am", "authorized", "true"], No: ["no", "not authorized", "false"] },
     },
     {
@@ -954,8 +1105,24 @@
        * could not work without it. That is a disqualifying answer, and the
        * wrong one.
        */
+      /**
+       * Profile or nothing.
+       *
+       * A wrong answer here is disqualifying: "No" to work authorisation, or
+       * "Yes" to needing sponsorship when the applicant does not, takes them out
+       * of the running before a human reads anything. Yet a null from this rule
+       * used to fall through to saved answers and then to the model — so one
+       * "No" banked on one portal was replayed as a negative answer across every
+       * application after it, which is the behaviour reported.
+       *
+       * There is no safe guess available here, and the model is the wrong tool
+       * for a legal declaration: it can only infer, and an inferred immigration
+       * status stated to an employer is a liability. Unanswered means the field
+       * is left empty and highlighted for the applicant.
+       */
+      profileOnly: true,
       value: (p, el, label) => {
-        const stored = W(p).requireSponsorship;
+        const stored = sponsorshipFor(p);
         if (!stored) return null;   // unknown: leave it for the applicant
         const text = String(label ?? "");
         if (!SPONSORSHIP_INVERTED.test(text)) return stored;
@@ -966,7 +1133,7 @@
         // Some of these ask about authorisation in the same breath — "legally
         // authorized to work without sponsorship" — and needing no sponsorship
         // only answers half of that.
-        const authorized = W(p).authorizedToWork;
+        const authorized = authorizedFor(p);
         if (/\bauthoriz|\beligible|\blegally\b/i.test(text) && authorized && !/^y/i.test(authorized)) return "No";
         return "Yes";
       },
@@ -977,6 +1144,22 @@
       weight: 10,
       match: [/\bvisa\s*(status|type)\b/i, /\bimmigration\s*status\b/i, /\bwork\s*permit\s*type\b/i],
       type: ["select", "text"],
+      /**
+       * Profile or nothing.
+       *
+       * A wrong answer here is disqualifying: "No" to work authorisation, or
+       * "Yes" to needing sponsorship when the applicant does not, takes them out
+       * of the running before a human reads anything. Yet a null from this rule
+       * used to fall through to saved answers and then to the model — so one
+       * "No" banked on one portal was replayed as a negative answer across every
+       * application after it, which is the behaviour reported.
+       *
+       * There is no safe guess available here, and the model is the wrong tool
+       * for a legal declaration: it can only infer, and an inferred immigration
+       * status stated to an employer is a liability. Unanswered means the field
+       * is left empty and highlighted for the applicant.
+       */
+      profileOnly: true,
       value: (p) => W(p).workAuthType || W(p).visaStatus,
     },
     {
@@ -984,6 +1167,22 @@
       weight: 11,
       match: [/\bwilling\s*to\s*relocat/i, /\bopen\s*to\s*relocat/i, /\brelocation\b/i],
       type: ["select", "radio", "text"],
+      /**
+       * Profile or nothing.
+       *
+       * A wrong answer here is disqualifying: "No" to work authorisation, or
+       * "Yes" to needing sponsorship when the applicant does not, takes them out
+       * of the running before a human reads anything. Yet a null from this rule
+       * used to fall through to saved answers and then to the model — so one
+       * "No" banked on one portal was replayed as a negative answer across every
+       * application after it, which is the behaviour reported.
+       *
+       * There is no safe guess available here, and the model is the wrong tool
+       * for a legal declaration: it can only infer, and an inferred immigration
+       * status stated to an employer is a liability. Unanswered means the field
+       * is left empty and highlighted for the applicant.
+       */
+      profileOnly: true,
       value: (p) => W(p).willingToRelocate || null,  // never assumed: a commitment to move
       options: { Yes: ["yes", "willing", "true"], No: ["no", "not willing", "false"] },
     },
@@ -1191,6 +1390,22 @@
       identity: true,
       weight: 12,
       match: [/\bhispanic\s*(or|\/)?\s*latino\b/i],
+      /**
+       * The reciprocal of the guard on `race`.
+       *
+       * Every Workday race dropdown prints "Asian (Not Hispanic or Latino)" and
+       * the rest of the category definitions next to itself, so this rule — one
+       * weight higher than `race` — matched the race dropdown and answered a
+       * seven-way category question with a yes/no. The full category list is
+       * signalled by the words "race" or "designation"; an actual
+       * Hispanic/Latino question is not disqualified by them, because it is
+       * recognised by its own interrogative form first.
+       */
+      deny: [
+        (label) =>
+          /\brace\b|\bdesignation/i.test(label) &&
+          !/\b(are|do)\s+you\b[^|]{0,40}hispanic|hispanic\s*(or|\/)\s*latino\s*\?/i.test(label),
+      ],
       type: ["select", "radio"],
       eeo: true,
       decline: "Decline to self-identify",
@@ -1209,7 +1424,27 @@
       identity: true,
       weight: 10,
       match: [/\b(race|ethnicity|ethnic\s*(group|background))\b/i],
-      deny: [/hispanic\s*(or|\/)?\s*latino/i],
+      /**
+       * This is why "Asian" kept coming out as "American Indian or Alaska
+       * Native" even after the race categories were canonicalised.
+       *
+       * The deny was a bare /hispanic or latino/ and denials are tested against
+       * the *whole* derived label — which includes the text around the field.
+       * Every Workday race dropdown prints the category definitions above it
+       * ("Asian (Not Hispanic or Latino) - A person having origins in..."), so
+       * the phrase was always present, the race rule was always skipped, and
+       * the dropdown fell through to saved answers and the model.
+       *
+       * The intent was only ever to leave the separate "Are you Hispanic or
+       * Latino?" yes/no question alone. So: deny when the label is about
+       * Hispanic/Latino and says nothing about race or ethnicity, and not
+       * otherwise.
+       */
+      deny: [
+        (label) =>
+          /hispanic\s*(or|\/)?\s*latino/i.test(label) &&
+          !/\b(race|ethnicit|ethnic\s*(group|background)|designation)\b/i.test(label),
+      ],
       type: ["select", "radio", "checkbox"],
       eeo: true,
       decline: "Decline to self-identify",

@@ -244,3 +244,24 @@ body {
 .pending__q { display: block; font-size: 11.5px; font-weight: 600; color: var(--ink); line-height: 1.35; }
 .pending__a { display: block; margin-top: 2px; font-size: 11px; color: var(--soft); line-height: 1.35; }
 .pending__new { color: var(--brand); font-weight: 700; }
+
+
+/* Answers edited on the page and not yet saved. Listed above the sync queue
+   because they are the ones still waiting on a decision. */
+.pending__item--held { border-left: 2px solid #FFB020; padding-left: 8px; }
+
+.pending__held { color: #B54708; font-weight: 600; }
+
+.pending__save {
+  flex: 0 0 auto;
+  cursor: pointer;
+  border: 0;
+  border-radius: 7px;
+  padding: 4px 9px;
+  margin-left: 6px;
+  background: #5B2AD6;
+  color: #fff;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.pending__save:hover { background: #4A21B0; }

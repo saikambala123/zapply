@@ -469,7 +469,11 @@
         (kind === "month" && types.includes("text"));
       if (!typeOk) continue;
 
-      if (rule.deny?.some((re) => re.test(label))) continue;
+      // A denial may be a pattern or a predicate. The predicate form exists
+      // because some disqualifying words are only disqualifying in context:
+      // "Hispanic or Latino" next to a race dropdown is the category list, but
+      // on its own it is a separate yes/no question. See the `race` rule.
+      if (rule.deny?.some((d) => (typeof d === "function" ? d(label) : d.test(label)))) continue;
 
       // `require` is the positive counterpart to `deny`: tested against the
       // whole label, including the section heading. It is what lets a rule say
@@ -707,9 +711,160 @@
     });
   }
 
+  /**
+   * The longest value a control will accept, or 0 when it does not say.
+   *
+   * Oracle Recruiting caps Suffix at 80 characters and Tax District at 150 and
+   * rejects anything longer with a validation message. Writing past the cap
+   * leaves the applicant with a red field they have to find and clear by hand,
+   * so an over-long value is refused here instead of written and rejected.
+   */
+  function maxLengthOf(el) {
+    const raw = Number(el?.getAttribute?.("maxlength") ?? el?.maxLength ?? 0);
+    return Number.isFinite(raw) && raw > 0 ? raw : 0;
+  }
+
+  /**
+   * Workday's date control is not one box, it is two or three.
+   *
+   * `From *` renders as separate `MM` and `YYYY` inputs inside one wrapper,
+   * each a spinbutton with its own two- or four-character cap. Writing
+   * "12/2019" at it put the whole string into a segment that could not hold it,
+   * and the page came back "Invalid Date: /2019" — the year had landed and the
+   * month never had.
+   *
+   * Segments are found through the wrapper rather than by guessing from the
+   * element handed in, because either segment may be the one the field scan
+   * picked up.
+   */
+  const DATE_SEGMENT_SELECTOR =
+    '[data-automation-id*="dateSection" i] input, input[data-automation-id*="dateSection" i], ' +
+    'input[role="spinbutton"], input[aria-label*="Month" i], input[aria-label*="Year" i], input[aria-label*="Day" i]';
+
+  function dateSegments(el) {
+    if (!el) return null;
+    const wrapper = el.closest?.(
+      '[data-automation-id*="dateInput" i], [data-automation-id*="datePicker" i], [data-automation-id*="dateWidget" i], .css-dateinput, [role="group"], [class*="dateInput" i]'
+    ) || el.parentElement;
+    if (!wrapper) return null;
+
+    let inputs = [];
+    try {
+      inputs = Array.from(wrapper.querySelectorAll(DATE_SEGMENT_SELECTOR));
+    } catch {}
+    if (inputs.length < 2) return null;
+
+    // Only short numeric boxes count. A wrapper that also holds a free-text
+    // field is not a segmented date and must not be treated as one.
+    const segs = inputs.filter((node) => {
+      const cap = Number(node.getAttribute?.("maxlength") ?? node.maxLength ?? 0);
+      return cap > 0 && cap <= 4;
+    });
+    if (segs.length < 2 || segs.length > 3) return null;
+    if (!segs.includes(el) && !wrapper.contains(el)) return null;
+
+    const kindOf = (node) => {
+      const hint = `${node.getAttribute?.("data-automation-id") || ""} ${node.getAttribute?.("aria-label") || ""} ${node.getAttribute?.("placeholder") || ""} ${node.getAttribute?.("name") || ""}`;
+      if (/month|\bmm\b/i.test(hint)) return "month";
+      if (/year|\byyyy\b|\byy\b/i.test(hint)) return "year";
+      if (/\bday\b|\bdd\b/i.test(hint)) return "day";
+      const cap = Number(node.getAttribute?.("maxlength") ?? node.maxLength ?? 0);
+      return cap === 4 ? "year" : null;
+    };
+
+    const mapped = segs.map((node) => ({ node, kind: kindOf(node) }));
+    if (!mapped.some((s) => s.kind === "year")) return null;
+
+    // Segments with no usable hint are assigned by document order: on a
+    // US-locale Workday form that is month, then day, then year.
+    const order = ["month", "day", "year"];
+    let next = 0;
+    for (const seg of mapped) {
+      if (seg.kind) { next = Math.max(next, order.indexOf(seg.kind) + 1); continue; }
+      while (next < order.length && mapped.some((s) => s.kind === order[next])) next++;
+      seg.kind = order[next] ?? null;
+      next++;
+    }
+    return mapped.filter((s) => s.kind);
+  }
+
+  /** Pull month / day / year out of the formats a profile date arrives in. */
+  function dateParts(value) {
+    const raw = String(value ?? "").trim();
+    if (!raw) return null;
+
+    let m = raw.match(/^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?$/);        // 2019-12-05
+    if (m) return { year: m[1], month: m[2], day: m[3] ?? "" };
+
+    m = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);                // 12/05/2019
+    if (m) return { month: m[1], day: m[2], year: m[3] };
+
+    m = raw.match(/^(\d{1,2})\/(\d{4})$/);                           // 12/2019
+    if (m) return { month: m[1], year: m[2], day: "" };
+
+    m = raw.match(/^(\d{4})$/);                                      // 2019
+    if (m) return { year: m[1], month: "", day: "" };
+
+    const parsed = new Date(raw);
+    if (!Number.isNaN(parsed.getTime())) {
+      return {
+        year: String(parsed.getFullYear()),
+        month: String(parsed.getMonth() + 1),
+        day: String(parsed.getDate()),
+      };
+    }
+    return null;
+  }
+
+  function setSegmentedDate(el, value) {
+    const segs = dateSegments(el);
+    if (!segs) return false;
+    const parts = dateParts(value);
+    if (!parts || !parts.year) return false;
+
+    // Month before year, matching the reading order. Workday advances focus
+    // itself once a segment is full, so each write starts by taking focus back
+    // rather than trusting where the caret ended up.
+    const order = { month: 0, day: 1, year: 2 };
+    const sorted = [...segs].sort((a, b) => order[a.kind] - order[b.kind]);
+
+    let wrote = 0;
+    for (const { node, kind } of sorted) {
+      const cap = Number(node.getAttribute?.("maxlength") ?? node.maxLength ?? 0) || (kind === "year" ? 4 : 2);
+      const raw = parts[kind];
+      if (!raw) continue;
+      const text = cap === 4 ? String(raw).padStart(4, "0") : String(raw).padStart(2, "0").slice(-2);
+
+      try {
+        ensureVisible(node);
+        node.focus?.({ preventScroll: true });
+        const writer = nativeSetter(node);
+        const put = (v) => { if (writer) writer.call(node, v); else node.value = v; };
+        put("");
+        fire(node, "input");
+        put(text);
+        const tracker = node._valueTracker;
+        if (tracker && typeof tracker.setValue === "function") tracker.setValue("");
+        fire(node, "keydown", "beforeinput", "input", "keyup", "change");
+        if (String(node.value ?? "") === text) wrote++;
+      } catch {}
+    }
+
+    try { sorted[sorted.length - 1]?.node.blur?.(); } catch {}
+    for (const { node } of sorted) fire(node, "blur");
+    return wrote > 0;
+  }
+
   function setTextValue(el, value) {
     const text = String(value ?? "");
     if (!text) return false;
+
+    // A date split across MM / DD / YYYY boxes is written segment by segment.
+    if (setSegmentedDate(el, text)) return true;
+
+    const cap = maxLengthOf(el);
+    if (cap && text.length > cap) return false;
+
     ensureVisible(el);
     try { el.focus?.({ preventScroll: true }); } catch { try { el.focus?.(); } catch {} }
 
@@ -757,14 +912,59 @@
       if (tracker && typeof tracker.setValue === "function") tracker.setValue(previous);
     } catch {}
 
-    fire(el, "beforeinput", "input", "change");
+    // Key events bracket the input for the same reason they do in
+    // `retypeValue`: Workday will not consider a field answered until it has
+    // seen keyboard activity on it, whatever the box contains.
+    fire(el, "keydown", "beforeinput", "input", "keyup", "change");
     // A blur is what commits the value on most ATS validators, but stealing
     // focus back afterwards is what made the page jitter. Blur once, silently.
     try { el.blur?.(); } catch {}
     fire(el, "blur");
-    return el.isContentEditable && el.tagName !== "INPUT" && el.tagName !== "TEXTAREA"
-      ? clean(el.textContent) === clean(text)
-      : String(el.value ?? "") === text;
+
+    const isRich = el.isContentEditable && el.tagName !== "INPUT" && el.tagName !== "TEXTAREA";
+    const settled = isRich ? clean(el.textContent) : String(el.value ?? "");
+    if (isRich ? settled === clean(text) : settled === text) return true;
+
+    /**
+     * The field ended up holding something other than what was written.
+     *
+     * On Oracle Recruiting this was not a failed write but an *appended* one:
+     * the box kept its old contents and gained the new value on the end, over
+     * and over, producing ".WashingtonWashingtonMy address is in Bellevue…" in
+     * a Suffix box capped at 80 characters, and the street, ZIP, city and state
+     * run together in Address Line 3. Whatever the page is doing to cause it —
+     * a typeahead that re-inserts at the caret, a component that echoes its own
+     * model back — the result is the same and the applicant then has to find and
+     * clear every one of them by hand.
+     *
+     * So: one clean retry through an explicit empty transition, and if the field
+     * still will not hold exactly the intended value it is emptied rather than
+     * left holding a concatenation. An empty box is a box the applicant can see
+     * is theirs to fill. A corrupted one looks answered.
+     */
+    const contaminated =
+      settled.length > text.length && (settled.includes(text) || (previous && settled.includes(previous)));
+
+    try {
+      const writer = nativeSetter(el);
+      const put = (v) => { if (isRich) el.textContent = v; else if (writer) writer.call(el, v); else el.value = v; };
+      put("");
+      fire(el, "input");
+      put(text);
+      const tracker = el._valueTracker;
+      if (tracker && typeof tracker.setValue === "function") tracker.setValue("");
+      fire(el, "beforeinput", "input", "change", "blur");
+
+      const after = isRich ? clean(el.textContent) : String(el.value ?? "");
+      if (isRich ? after === clean(text) : after === text) return true;
+
+      if (contaminated || after.length > text.length) {
+        put("");
+        fire(el, "input", "change", "blur");
+      }
+    } catch {}
+
+    return false;
   }
 
   /**
@@ -780,6 +980,11 @@
   function retypeValue(el, value) {
     const text = String(value ?? "");
     if (!text) return false;
+
+    // A segmented date is rewritten segment by segment; retyping the whole
+    // string at one segment is what produced "Invalid Date: /2019".
+    if (setSegmentedDate(el, text)) return true;
+
     ensureVisible(el);
     try { el.focus?.({ preventScroll: true }); } catch {}
 
@@ -797,13 +1002,32 @@
     write("");
     fire(el, "input");
     write(text);
-    fire(el, "beforeinput", "input", "change");
+    /**
+     * Key events either side of the input.
+     *
+     * Workday takes its value from `input` but only treats a field as *touched*
+     * once it has seen keyboard activity, and an untouched field is reported
+     * empty by its validator however much text is in the box. That is the
+     * "Azure DevOps Engineer" sitting under "The field Job Title is required
+     * and must have a value" — the text was there, the field had never been
+     * typed in, and the model stayed empty.
+     */
+    fire(el, "keydown", "keypress", "beforeinput", "input", "keyup", "change");
     try { el.blur?.(); } catch {}
     fire(el, "blur", "focusout");
     return String(el.value ?? "") === text;
   }
 
   /** Has the page itself marked this control as unacceptable? */
+  /**
+   * Is the page complaining about this field?
+   *
+   * Only `aria-invalid` and `aria-describedby` were checked. Workday marks
+   * neither: it renders the message as a sibling node inside the field's
+   * wrapper, so "The field Job Title is required and must have a value" sat
+   * under a box containing "Azure DevOps Engineer" and nothing here noticed.
+   * The retype that would have committed the value therefore never ran.
+   */
   function flaggedInvalid(el) {
     try {
       if (el.getAttribute?.("aria-invalid") === "true") return true;
@@ -812,6 +1036,21 @@
         for (const id of described.split(/\s+/)) {
           const node = document.getElementById(id);
           if (node && /\brequired\b|\berror\b|\binvalid\b/i.test(node.textContent || "")) return true;
+        }
+      }
+
+      // Workday, Oracle and iCIMS all render the message near the field rather
+      // than linking it. Walk up a few levels and look for an error node that
+      // belongs to this control and no other.
+      let node = el.parentElement;
+      for (let depth = 0; node && depth < 4; depth++, node = node.parentElement) {
+        if (node.querySelectorAll?.("input, select, textarea").length > 1) break;
+        const errors = node.querySelectorAll?.(
+          '[data-automation-id*="error" i], [id*="error" i], [class*="error" i], [role="alert"], [aria-live="assertive"]'
+        );
+        for (const err of errors ?? []) {
+          const text = err.textContent || "";
+          if (/\b(is required|must have a value|invalid|enter a (valid|maximum)|cannot be blank)\b/i.test(text)) return true;
         }
       }
       return false;

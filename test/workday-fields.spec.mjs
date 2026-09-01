@@ -1,0 +1,146 @@
+import { readFileSync } from "node:fs";
+import vm from "node:vm";
+
+/**
+ * Workday field-writing regression suite.
+ *
+ *   node test/workday-fields.spec.mjs
+ *
+ * Locks in three reports from lseg.wd3 and nationalindemnity.wd5:
+ *
+ *   - "From *" showed "MM/2019" and "Error: Invalid Date: /2019". Workday
+ *     renders a date as two or three capped spinbuttons, and the whole
+ *     "12/2019" string was being written at one of them;
+ *   - Job Title, Company, Location, Address Line 1 and Postal Code showed
+ *     "is required and must have a value" with the value plainly in the box.
+ *     Workday reports an untouched field as empty however much text it holds,
+ *     and no keyboard activity was ever emitted;
+ *   - a work-experience Location with nothing in the profile was filled by the
+ *     answer model with "I am located in Jacksonville, Florida. I have 10 year".
+ */
+
+/* A DOM small enough to run the segmented-date writer against. */
+class Node {
+  constructor(tag, attrs = {}, children = []) {
+    this.tagName = tag.toUpperCase(); this.attrs = attrs; this.children = children;
+    this.parentElement = null; this.value = ""; this.isContentEditable = false;
+    this.maxLength = Number(attrs.maxlength ?? 0);
+    this.type = attrs.type ?? "text";
+    children.forEach((c) => { c.parentElement = this; });
+    this.events = [];
+  }
+  getAttribute(k) { return this.attrs[k] ?? null; }
+  setAttribute(k, v) { this.attrs[k] = v; }
+  focus() {} blur() {}
+  dispatchEvent(e) { this.events.push(e.type); return true; }
+  get descendants() { return this.children.flatMap((c) => [c, ...c.descendants]); }
+  matchesSel(sel) {
+    if (sel.includes('role="spinbutton"')) return this.attrs.role === "spinbutton";
+    const m = sel.match(/data-automation-id\*="([^"]+)"/i);
+    if (m) return String(this.attrs["data-automation-id"] ?? "").toLowerCase().includes(m[1].toLowerCase());
+    const a = sel.match(/aria-label\*="([^"]+)"/i);
+    if (a) return String(this.attrs["aria-label"] ?? "").toLowerCase().includes(a[1].toLowerCase());
+    return false;
+  }
+  querySelectorAll(sel) {
+    const parts = sel.split(",").map((s) => s.trim());
+    return this.descendants.filter((n) => n.tagName === "INPUT" && parts.some((p) => n.matchesSel(p)));
+  }
+  querySelector(sel) { return this.querySelectorAll(sel)[0] ?? null; }
+  closest(sel) {
+    const parts = sel.split(",").map((s) => s.trim());
+    let n = this;
+    while (n) {
+      if (parts.some((p) => {
+        const m = p.match(/data-automation-id\*="([^"]+)"/i);
+        if (m) return String(n.attrs["data-automation-id"] ?? "").toLowerCase().includes(m[1].toLowerCase());
+        if (p.includes('role="group"')) return n.attrs.role === "group";
+        return false;
+      })) return n;
+      n = n.parentElement;
+    }
+    return null;
+  }
+}
+
+const sb = { document: { addEventListener(){}, querySelectorAll:()=>[], getElementById:()=>null, documentElement:{} },
+  setTimeout, clearTimeout, console,
+  HTMLInputElement: class {}, HTMLTextAreaElement: class {}, HTMLSelectElement: class {},
+  Event: class { constructor(t){ this.type=t; } }, KeyboardEvent: class { constructor(t){ this.type=t; } },
+  MouseEvent: class { constructor(t){ this.type=t; } }, FocusEvent: class { constructor(t){ this.type=t; } },
+  CSS: { escape: (s)=>s } };
+sb.window = sb; sb.globalThis = sb;
+vm.createContext(sb);
+const EXT = process.env.ZAPPLY_EXT || "extension";
+vm.runInContext(readFileSync(`${EXT}/lib/matcher.js`,"utf8"), sb);
+vm.runInContext(readFileSync(`${EXT}/lib/field-map.js`,"utf8"), sb);
+const M = sb.ZAPPLY_MATCHER;
+
+/* Workday's month/year picker: two capped spinbuttons in one wrapper. */
+function monthYear() {
+  const month = new Node("input", { "data-automation-id": "dateSectionMonth-input", "aria-label": "Month", placeholder: "MM", maxlength: "2", role: "spinbutton" });
+  const year  = new Node("input", { "data-automation-id": "dateSectionYear-input",  "aria-label": "Year",  placeholder: "YYYY", maxlength: "4", role: "spinbutton" });
+  const wrap  = new Node("div", { "data-automation-id": "dateInputWrapper" }, [month, year]);
+  return { wrap, month, year };
+}
+function monthDayYear() {
+  const month = new Node("input", { "data-automation-id": "dateSectionMonth-input", "aria-label": "Month", maxlength: "2", role: "spinbutton" });
+  const day   = new Node("input", { "data-automation-id": "dateSectionDay-input",   "aria-label": "Day",   maxlength: "2", role: "spinbutton" });
+  const year  = new Node("input", { "data-automation-id": "dateSectionYear-input",  "aria-label": "Year",  maxlength: "4", role: "spinbutton" });
+  const wrap  = new Node("div", { "data-automation-id": "dateInputWrapper" }, [month, day, year]);
+  return { wrap, month, day, year };
+}
+
+let fails = 0;
+const check = (label, got, want) => {
+  const ok = got === want; if (!ok) fails++;
+  console.log(`${ok ? "  ok  " : "  FAIL"} ${label}`);
+  if (!ok) console.log(`         got ${JSON.stringify(got)}  want ${JSON.stringify(want)}`);
+};
+
+console.log("\nWorkday MM / YYYY (the 'Invalid Date: /2019' field)");
+let d = monthYear();
+check("write reports success", M.setTextValue(d.month, "12/2019"), true);
+check("month segment filled", d.month.value, "12");
+check("year segment filled", d.year.value, "2019");
+
+d = monthYear();
+M.setTextValue(d.year, "07/2016");   // scan may pick up either segment
+check("works when handed the year segment", d.month.value, "07");
+check("  and the year is right", d.year.value, "2016");
+
+d = monthYear();
+M.setTextValue(d.month, "2019-12-05");
+check("ISO input: month", d.month.value, "12");
+check("ISO input: year", d.year.value, "2019");
+
+console.log("\nWorkday MM / DD / YYYY");
+d = monthDayYear();
+M.setTextValue(d.month, "12/05/2019");
+check("month", d.month.value, "12");
+check("day", d.day.value, "05");
+check("year", d.year.value, "2019");
+
+console.log("\nkeyboard activity is emitted (Workday marks the field touched)");
+d = monthYear();
+M.setTextValue(d.month, "12/2019");
+check("keydown fired on a segment", d.month.events.includes("keydown"), true);
+check("change fired on a segment", d.month.events.includes("change"), true);
+
+console.log("\na plain text box is untouched by the segment path");
+const plain = new Node("input", { type: "text" });
+check("ordinary input still writes normally", M.setTextValue(plain, "Azure DevOps Engineer"), true);
+check("  value is the whole string", plain.value, "Azure DevOps Engineer");
+
+console.log("\nwork-experience Location is profile-only");
+const RULES = sb.ZAPPLY_FIELD_MAP;
+const expLoc = RULES.find((r) => r.key === "experienceLocation");
+check("experienceLocation is marked profileOnly", !!expLoc.profileOnly, true);
+check("educationLocation is marked profileOnly", !!RULES.find((r) => r.key === "educationLocation").profileOnly, true);
+const jobWithout = { experience: [{ title: "Azure DevOps Engineer", company: "Quadrant Technologies" }] };
+const jobWith = { experience: [{ title: "Azure DevOps Engineer", company: "Quadrant Technologies", location: "Hyderabad, India" }] };
+check("no profile location yields nothing to fill", expLoc.value(jobWithout, null, "Location", 0) || null, null);
+check("a profile location is still used", expLoc.value(jobWith, null, "Location", 0), "Hyderabad, India");
+
+console.log(fails ? `\n${fails} failing\n` : "\nall passing\n");
+process.exit(fails ? 1 : 0);

@@ -166,11 +166,52 @@ try { chrome.storage.local.remove(["zapplyAccountPassword"]); } catch {}
  * typos or answers meant for one application only, so the count carries a Clear
  * button that empties the queue without uploading it.
  */
+/**
+ * Answers the applicant edited on the page but has not saved yet.
+ *
+ * These used to be announced by a bar floating over the application itself,
+ * which asked for a decision about a question they were often still in the
+ * middle of answering. They are listed here instead, next to the saved answers
+ * they would join, where the decision can be made once and with the full list
+ * in view.
+ */
+async function heldAnswers() {
+  const tab = await activeTab();
+  if (!tab?.id) return [];
+  return new Promise((resolve) => {
+    try {
+      chrome.tabs.sendMessage(tab.id, { type: "ZAPPLY_PENDING_LIST" }, (res) => {
+        void chrome.runtime.lastError;
+        resolve(res?.items ?? []);
+      });
+    } catch {
+      resolve([]);
+    }
+  });
+}
+
+async function heldCommand(type, question) {
+  const tab = await activeTab();
+  if (!tab?.id) return;
+  await new Promise((resolve) => {
+    try {
+      chrome.tabs.sendMessage(tab.id, { type, question }, () => {
+        void chrome.runtime.lastError;
+        resolve();
+      });
+    } catch {
+      resolve();
+    }
+  });
+  await refreshPending();
+}
+
 async function refreshPending() {
   const saved = session?.responses?.length ?? 0;
   const res = await send({ type: "ZAPPLY_GET_PENDING" });
   const queued = res?.data?.responses ?? [];
-  const pending = queued.length;
+  const held = await heldAnswers();
+  const pending = queued.length + held.length;
 
   $("stat-answers").textContent = pending ? `${saved}+${pending}` : String(saved);
 
@@ -187,9 +228,11 @@ async function refreshPending() {
   if (pending) {
     // The buttons beside it say what the actions are; a third sentence
     // explaining them only pushed the list itself off the screen.
-    $("pending-note").textContent =
-      `${pending} answer${pending === 1 ? "" : "s"} waiting to sync`;
-    renderPendingList(queued);
+    const parts = [];
+    if (held.length) parts.push(`${held.length} unsaved`);
+    if (queued.length) parts.push(`${queued.length} waiting to sync`);
+    $("pending-note").textContent = parts.join(" · ");
+    renderPendingList(queued, held);
   }
   return pending;
 }
@@ -201,13 +244,56 @@ async function refreshPending() {
  * committing it to the dashboard — and no way to tell which questions are new
  * against which will overwrite an answer already saved.
  */
-function renderPendingList(queued) {
+function renderPendingList(queued, held = []) {
   const list = $("pending-list");
   list.innerHTML = "";
 
   const savedKeys = new Set(
     (session?.responses ?? []).map((r) => normalizeQuestion(r.question || ""))
   );
+
+  // Unsaved edits come first: they are the ones still awaiting a decision.
+  held.forEach((entry) => {
+    const question = String(entry.question || "").trim();
+    const answer = String(entry.answer ?? "").trim();
+
+    const li = document.createElement("li");
+    li.className = "pending__item--held";
+
+    const text = document.createElement("div");
+    text.className = "pending__text";
+
+    const q = document.createElement("span");
+    q.className = "pending__q";
+    q.textContent = question;
+    const tag = document.createElement("span");
+    tag.className = "pending__held";
+    tag.textContent = " \u00b7 unsaved";
+    q.appendChild(tag);
+
+    const a = document.createElement("span");
+    a.className = "pending__a";
+    a.textContent = answer.length > 110 ? `${answer.slice(0, 110)}\u2026` : answer;
+
+    text.append(q, a);
+
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "pending__save";
+    save.textContent = "Save";
+    save.title = "Keep this answer and reuse it on your next application";
+    save.addEventListener("click", () => heldCommand("ZAPPLY_PENDING_SAVE", question));
+
+    const drop = document.createElement("button");
+    drop.type = "button";
+    drop.className = "pending__x";
+    drop.textContent = "\u00d7";
+    drop.setAttribute("aria-label", `Discard unsaved answer for ${question}`);
+    drop.addEventListener("click", () => heldCommand("ZAPPLY_PENDING_DISCARD", question));
+
+    li.append(text, save, drop);
+    list.appendChild(li);
+  });
 
   queued.forEach((entry) => {
     const question = String(entry.question || "").trim();

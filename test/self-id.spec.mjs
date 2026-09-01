@@ -169,5 +169,81 @@ const GEN = ["Select One", "Man", "Woman", "I don't wish to answer"];
 check("Male resolves to Man", pick(GEN, "Male", "Please specify your gender."), "Man");
 check("Female resolves to Woman", pick(GEN, "Female", "Please specify your gender."), "Woman");
 
+/* ------------------------------------------------------------------ *
+ * Oracle Recruiting (egug.fa.us2.oraclecloud.com) contact section.
+ *
+ *   - the street landed in Address Line 1, 3 AND 4, because the street rule's
+ *     `address\\s*(line\\s*)?1?` made the digit optional and only line 2 was
+ *     denied;
+ *   - Suffix, Tax District, Title and Second Last Name had no rule, so the
+ *     answer model filled them — Suffix with "My address is in Bellevue,
+ *     Washington, United States." and Tax District with the full address;
+ *   - Second Last Name got the applicant's own surname copied into it.
+ * ------------------------------------------------------------------ */
+
+console.log("\nOracle Recruiting contact section");
+const ADDR = { personal: { ...PROFILE.personal, address: "16243 NE 13TH PLACE", city: "Bellevue", state: "WA", zip: "98008", country: "United States" } };
+const planAddr = (label) => {
+  const control = el();
+  const rule = M.matchRule(control, label, RULES);
+  if (!rule) return { key: null, value: null, blank: false };
+  let value = null;
+  try { value = rule.value(ADDR, control, label, 0); } catch {}
+  return { key: rule.key, value, blank: !!rule.blank };
+};
+
+check("Address Line 1 takes the street", planAddr("Address Line 1").key, "address");
+check("Address Line 2 does not take the street", planAddr("Address Line 2").key !== "address", true);
+check("Address Line 3 does not take the street", planAddr("Address Line 3").key !== "address", true);
+check("Address Line 4 does not take the street", planAddr("Address Line 4").key !== "address", true);
+check("Address Line 3 is left blank", planAddr("Address Line 3").blank, true);
+check("Address Line 4 is left blank", planAddr("Address Line 4").blank, true);
+check("Tax District is left blank", planAddr("Tax District").blank, true);
+check("Tax District is not the address", planAddr("Tax District").value, null);
+check("Suffix has its own rule", planAddr("Suffix").key, "nameSuffix");
+check("Suffix is empty without a profile value", planAddr("Suffix").value, null);
+check("Title has its own rule", planAddr("Title").key, "namePrefix");
+check("Second Last Name is not the surname", planAddr("Second Last Name").value, null);
+check("Second Last Name is left blank", planAddr("Second Last Name").blank, true);
+check("City still fills", planAddr("City").value, "Bellevue");
+check("ZIP Code still fills", planAddr("ZIP Code").value, "98008");
+check("Legal First Name still fills", planAddr("Legal First Name").value, "Subhash");
+check("Legal Last Name still fills", planAddr("Legal Last Name").value, "Yalamadala");
+
+console.log("\nlength caps");
+const capped = (max, text) => {
+  const node = { tagName: "INPUT", type: "text", value: "", maxLength: max,
+    getAttribute: (k) => (k === "maxlength" ? String(max) : k === "type" ? "text" : null),
+    focus() {}, blur() {}, select() {}, dispatchEvent() { return true; },
+    setAttribute() {}, closest: () => null, isContentEditable: false };
+  return M.setTextValue(node, text);
+};
+check("a value past the field's maxlength is refused", capped(80, "x".repeat(120)), false);
+check("a value within the cap is written", capped(80, "Jr."), true);
+
+console.log("\nrace vs Hispanic/Latino routing");
+const selNode = el("select");
+const WD_RACE =
+  "Please select one of the following race designations as defined above. | " +
+  "Asian (Not Hispanic or Latino) - A person having origins in any of the original peoples of the Far East | " +
+  "American Indian or Alaska Native (Not Hispanic or Latino) - A person having origins in North and South America";
+check("Workday race dropdown reaches the race rule", M.matchRule(selNode, WD_RACE, RULES)?.key, "race");
+check("a plain Race label reaches the race rule", M.matchRule(selNode, "Race", RULES)?.key, "race");
+check("Ethnicity reaches the race rule", M.matchRule(selNode, "Ethnicity", RULES)?.key, "race");
+check("the Hispanic yes/no question is left to its own rule", M.matchRule(selNode, "Are you Hispanic or Latino?", RULES)?.key, "hispanicLatino");
+check("...even under an Ethnicity heading", M.matchRule(selNode, "Ethnicity | Are you Hispanic or Latino?", RULES)?.key, "hispanicLatino");
+
+console.log("\nwork eligibility");
+const auth = RULES.find((r) => r.key === "authorizedToWork");
+const spon = RULES.find((r) => r.key === "requireSponsorship");
+check("eligibility rules are profile-only", [auth, spon, RULES.find((r) => r.key === "visaStatus"), RULES.find((r) => r.key === "willingToRelocate")].every((r) => r.profileOnly), true);
+check("a citizen is authorised without restating it", auth.value({ workAuth: { workAuthType: "U.S. Citizen" } }), "Yes");
+check("a citizen needs no sponsorship", spon.value({ workAuth: { workAuthType: "U.S. Citizen" } }, null, "Will you require sponsorship?"), "No");
+check("a green card holder is authorised", auth.value({ workAuth: { workAuthType: "Green Card" } }), "Yes");
+check("an explicit stored answer still wins", spon.value({ workAuth: { workAuthType: "U.S. Citizen", requireSponsorship: "Yes" } }, null, "Will you require sponsorship?"), "Yes");
+check("nothing recorded stays blank", auth.value({ workAuth: {} }) || null, null);
+check("inverted phrasing, citizen", spon.value({ workAuth: { workAuthType: "U.S. Citizen" } }, null, "Are you able to work without sponsorship?"), "Yes");
+check("inverted phrasing, needs sponsorship", spon.value({ workAuth: { requireSponsorship: "Yes" } }, null, "Are you able to work without sponsorship?"), "No");
+
 console.log(fails ? `\n${fails} failing\n` : "\nall passing\n");
 process.exit(fails ? 1 : 0);
