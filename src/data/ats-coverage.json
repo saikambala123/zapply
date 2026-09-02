@@ -1,0 +1,187 @@
+{
+  "generatedAt": "2026-09-02T17:03:44.485Z",
+  "totals": {
+    "adapters": 25,
+    "verified": 1,
+    "fixtures": 1,
+    "assertions": 14
+  },
+  "rows": [
+    {
+      "key": "workday",
+      "label": "Workday",
+      "tier": "verified",
+      "fixtures": 1,
+      "assertions": 14
+    },
+    {
+      "key": "adp",
+      "label": "ADP",
+      "tier": "detected",
+      "fixtures": 0,
+      "assertions": 0
+    },
+    {
+      "key": "ashby",
+      "label": "Ashby",
+      "tier": "detected",
+      "fixtures": 0,
+      "assertions": 0
+    },
+    {
+      "key": "bamboohr",
+      "label": "BambooHR",
+      "tier": "detected",
+      "fixtures": 0,
+      "assertions": 0
+    },
+    {
+      "key": "breezy",
+      "label": "Breezy",
+      "tier": "detected",
+      "fixtures": 0,
+      "assertions": 0
+    },
+    {
+      "key": "bullhorn",
+      "label": "Bullhorn",
+      "tier": "detected",
+      "fixtures": 0,
+      "assertions": 0
+    },
+    {
+      "key": "dover",
+      "label": "Dover",
+      "tier": "detected",
+      "fixtures": 0,
+      "assertions": 0
+    },
+    {
+      "key": "greenhouse",
+      "label": "Greenhouse",
+      "tier": "detected",
+      "fixtures": 0,
+      "assertions": 0
+    },
+    {
+      "key": "icims",
+      "label": "iCIMS",
+      "tier": "detected",
+      "fixtures": 0,
+      "assertions": 0
+    },
+    {
+      "key": "jazzhr",
+      "label": "JazzHR",
+      "tier": "detected",
+      "fixtures": 0,
+      "assertions": 0
+    },
+    {
+      "key": "jobvite",
+      "label": "Jobvite",
+      "tier": "detected",
+      "fixtures": 0,
+      "assertions": 0
+    },
+    {
+      "key": "lever",
+      "label": "Lever",
+      "tier": "detected",
+      "fixtures": 0,
+      "assertions": 0
+    },
+    {
+      "key": "oraclehcm",
+      "label": "Oracle HCM",
+      "tier": "detected",
+      "fixtures": 0,
+      "assertions": 0
+    },
+    {
+      "key": "paylocity",
+      "label": "Paylocity",
+      "tier": "detected",
+      "fixtures": 0,
+      "assertions": 0
+    },
+    {
+      "key": "personio",
+      "label": "Personio",
+      "tier": "detected",
+      "fixtures": 0,
+      "assertions": 0
+    },
+    {
+      "key": "pinpoint",
+      "label": "Pinpoint",
+      "tier": "detected",
+      "fixtures": 0,
+      "assertions": 0
+    },
+    {
+      "key": "recruitee",
+      "label": "Recruitee",
+      "tier": "detected",
+      "fixtures": 0,
+      "assertions": 0
+    },
+    {
+      "key": "rippling",
+      "label": "Rippling",
+      "tier": "detected",
+      "fixtures": 0,
+      "assertions": 0
+    },
+    {
+      "key": "sapSuccessFactors",
+      "label": "SAP SuccessFactors",
+      "tier": "detected",
+      "fixtures": 0,
+      "assertions": 0
+    },
+    {
+      "key": "successfactors",
+      "label": "SAP SuccessFactors",
+      "tier": "detected",
+      "fixtures": 0,
+      "assertions": 0
+    },
+    {
+      "key": "smartrecruiters",
+      "label": "SmartRecruiters",
+      "tier": "detected",
+      "fixtures": 0,
+      "assertions": 0
+    },
+    {
+      "key": "taleo",
+      "label": "Taleo",
+      "tier": "detected",
+      "fixtures": 0,
+      "assertions": 0
+    },
+    {
+      "key": "teamtailor",
+      "label": "Teamtailor",
+      "tier": "detected",
+      "fixtures": 0,
+      "assertions": 0
+    },
+    {
+      "key": "ukg",
+      "label": "UKG / UltiPro",
+      "tier": "detected",
+      "fixtures": 0,
+      "assertions": 0
+    },
+    {
+      "key": "workable",
+      "label": "Workable",
+      "tier": "detected",
+      "fixtures": 0,
+      "assertions": 0
+    }
+  ],
+  "orphans": []
+}

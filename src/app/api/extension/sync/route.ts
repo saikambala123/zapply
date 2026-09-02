@@ -3,7 +3,8 @@ import { connectDB } from "@/lib/db";
 import Application from "@/models/Application";
 import SavedResponse, { normalizeQuestion } from "@/models/SavedResponse";
 import { requireUser } from "@/lib/auth";
-import { ok, handler, cors } from "@/lib/api";
+import { ok, fail, handler, cors } from "@/lib/api";
+import { z } from "zod";
 
 export const dynamic = "force-dynamic";
 export const OPTIONS = () => cors();
@@ -26,10 +27,63 @@ function categorizeQuestion(q: string) {
  *   { application: {...}, responses: [{question, answer, inputType}] }
  * Both halves are optional so a page can report responses without an application.
  */
+/**
+ * The extension's sync payload.
+ *
+ * This is the highest-volume untrusted input the portal takes, and it had no
+ * schema and no size limit. Two consequences worth closing:
+ *
+ *   - strings were written to the database at whatever length arrived, so one
+ *     malformed capture could store a megabyte against a job title;
+ *   - `responses` was walked with an awaited database call per item, so a
+ *     thousand-item array became a thousand sequential round trips and a
+ *     request that ties up a connection for minutes.
+ *
+ * Fields are capped at lengths comfortably above anything a real form produces,
+ * and the array is capped at 200 — an application with more answers than that is
+ * a bug, not a candidate.
+ */
+const str = (max: number) => z.string().trim().max(max);
+
+const SyncBody = z.object({
+  application: z
+    .object({
+      jobTitle: str(300),
+      company: str(300).optional(),
+      companyDomain: str(300).optional(),
+      location: str(300).optional(),
+      ats: str(60).optional(),
+      url: str(2000).optional(),
+      profileId: str(64).optional(),
+      appliedAt: z.union([z.string(), z.number()]).optional(),
+      autofill: z.record(z.unknown()).optional(),
+    })
+    .partial({ jobTitle: true })
+    .optional(),
+  responses: z
+    .array(
+      z.object({
+        question: str(2000),
+        answer: str(10000).optional(),
+        inputType: str(40).optional(),
+        options: z.array(str(500)).max(100).optional(),
+        ats: str(60).optional(),
+        domain: str(300).optional(),
+      })
+    )
+    .max(200)
+    .optional(),
+});
+
 export const POST = handler(async (req: NextRequest) => {
   const user = await requireUser(req);
   await connectDB();
-  const body = await req.json();
+
+  const parsed = SyncBody.safeParse(await req.json());
+  if (!parsed.success) {
+    return fail(parsed.error.issues[0]?.message ?? "That sync payload was not readable.", 400);
+  }
+  const body = parsed.data;
 
   let application = null;
   if (body.application?.jobTitle) {

@@ -5,7 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
 import {
   LayoutDashboard, User, Briefcase, MessageSquareQuote, Settings, Sparkles,
-  LogOut, Menu, X,
+  LogOut, Menu, X, Target,
 } from "lucide-react";
 import Logo from "@/components/ui/Logo";
 import { initials } from "@/lib/utils";
@@ -15,6 +15,7 @@ const NAV = [
   { href: "/dashboard/profile", label: "Profile", icon: User },
   { href: "/dashboard/applications", label: "Applications", icon: Briefcase },
   { href: "/dashboard/responses", label: "Saved answers", icon: MessageSquareQuote },
+  { href: "/dashboard/accuracy", label: "Fill accuracy", icon: Target },
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ];
 
