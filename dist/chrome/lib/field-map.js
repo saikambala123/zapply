@@ -234,11 +234,27 @@
    * and Zip boxes produced the duplicated address seen on iCIMS. Trailing
    * postal parts are peeled off; the street itself is never touched.
    */
+  /**
+   * A part that is a form-field name rather than an address.
+   *
+   * Résumé parsing sometimes writes the label where the value should be, so a
+   * stored address reads "8451 GATE PKWY W APT 128, City, Jacksonville,
+   * Florida, 32216". "City" there is not a place; it is the word "City".
+   */
+  const PLACEHOLDER_PART =
+    /^(city|town|state|province|county|zip|postal(\s*code)?|post\s*code|country|address(\s*line\s*\d)?|street|n\.?\/?a\.?|none|null|undefined|-+|\.+)$/i;
+
   const streetOnly = (p) => {
     const raw = fullAddress(p);
     if (!raw) return null;
-    const parts = raw.split(/\s*,\s*/).map((s) => s.trim()).filter(Boolean);
-    if (parts.length < 2) return raw;
+    const parts = raw
+      .split(/\s*,\s*/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      // A label sitting where a value belongs is dropped wherever it appears,
+      // not just from the tail.
+      .filter((part) => !PLACEHOLDER_PART.test(part));
+    if (parts.length < 2) return parts.join(", ") || raw;
 
     const lower = (s) => String(s ?? "").toLowerCase().trim();
     const city = lower(P(p).city);
@@ -247,7 +263,7 @@
 
     let removed = 0;
     let sawPostcode = false;
-    while (parts.length > 1 && removed < 3) {
+    while (parts.length > 1 && removed < 6) {
       const tail = lower(parts[parts.length - 1]);
       const isZip = /^\d{5}(-\d{4})?$/.test(tail) || /^[a-z]\d[a-z]\s*\d[a-z]\d$/.test(tail) || (zip && tail === zip);
       const isState = (state && tail === state) || /^[a-z]{2}$/.test(tail);
@@ -323,6 +339,23 @@
    * labels mean other things, so the rules that answer them are gated on this
    * pattern rather than on the label alone.
    */
+  /**
+   * The field's own label, without its surroundings.
+   *
+   * `deriveLabel` joins the field's own text with the section heading and the
+   * labels of nearby fields, and denials are tested against that whole string.
+   * For most rules that is right — a disqualifying word anywhere should
+   * disqualify. For the contact block it is not: Workday renders "Country Phone
+   * Code" and "Phone Device Type" beside "Phone Number", so the `phone` rule's
+   * deny on /country|type/ fired on the phone box itself. The rule was skipped,
+   * the box fell through to saved answers, and it came back holding the email
+   * address while the number went into the country-code box.
+   */
+  const ownLabel = (label) => String(label ?? "").split("|")[0].trim();
+
+  /** Deny only when the field's *own* label says so. */
+  const denyOwn = (re) => (label) => re.test(ownLabel(label));
+
   const SELF_ID_RE =
     /(voluntary\s+self[-\s]?identification|self[-\s]?identification\s+of\s+disability|form\s*cc-?305|cc-?305|section\s*503|omb\s*control\s*number\s*1250|voluntary\s+disclosure)/i;
 
@@ -487,8 +520,9 @@
       identity: true,
       weight: 10,
       match: [/\be-?mail\b/i],
-      deny: [THIRD_PARTY, /confirm|verify|re-?enter|alternate|reference|emergency/i,
-             /\bextension\b|\bext\.?\s*$|area\s*code|country\s*code/i],
+      deny: [THIRD_PARTY, /reference|emergency/i,
+             denyOwn(/confirm|verify|re-?enter|alternate/i),
+             denyOwn(/\bextension\b|\bext\.?\s*$|area\s*code|country\s*code/i)],
       type: ["text", "email"],
       value: (p) => P(p).email,
     },
@@ -505,7 +539,8 @@
       key: "phoneCountryCode",
       weight: 11,
       match: [/\b(country|dial|area)\s*code\b/i, /\bphone.*code\b/i],
-      deny: [THIRD_PARTY],
+      // Must be the code box itself, not the number box standing next to it.
+      deny: [THIRD_PARTY, (label) => !/code/i.test(ownLabel(label))],
       type: ["text", "select", "tel"],
       value: (p) => P(p).phoneCountryCode,
     },
@@ -513,7 +548,10 @@
       key: "phone",
       weight: 9,
       match: [/\b(phone|mobile|cell|telephone|contact\s*number)\b/i],
-      deny: [THIRD_PARTY, /country|area\s*code|extension|emergency|reference|type/i],
+      // Judged on its own label: the neighbouring "Country Phone Code" and
+      // "Phone Device Type" boxes must not disqualify the number box.
+      deny: [THIRD_PARTY, /emergency|reference/i,
+             denyOwn(/country|area\s*code|extension|\bdevice\b|\btype\b/i)],
       type: ["text", "tel"],
       value: (p) => P(p).phone,
     },
@@ -526,7 +564,7 @@
       key: "phoneExtension",
       weight: 12,
       match: [/\b(phone|telephone|mobile)?\s*extension\b/i, /\bext\.?\s*(number|no)?\s*$/i],
-      deny: [THIRD_PARTY],
+      deny: [THIRD_PARTY, (label) => !/ext/i.test(ownLabel(label))],
       type: ["text", "tel", "number"],
       /**
        * Most people do not have one, and a wrong extension is worse than none —
@@ -629,7 +667,26 @@
         const line2 = P(p).addressLine2;
         if (!line2) return null;
         const norm = (x) => String(x ?? "").trim().toLowerCase().replace(/[.,]/g, "");
-        return norm(line2) === norm(P(p).address) ? null : line2;
+        if (norm(line2) === norm(P(p).address)) return null;
+
+        /**
+         * Line 2 is an apartment or suite, never the rest of the postal
+         * address. A badly parsed profile stored "City, Jacksonville, Florida,
+         * 32216" here and it was written out verbatim, repeating the city,
+         * state and postcode that the form has its own boxes for.
+         */
+        const kept = String(line2)
+          .split(/\s*,\s*/)
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .filter((part) => !PLACEHOLDER_PART.test(part))
+          .filter((part) => {
+            const t = part.toLowerCase();
+            if (t === norm(P(p).city) || t === norm(P(p).state) || t === norm(P(p).zip)) return false;
+            if (/^\d{5}(-\d{4})?$/.test(t)) return false;
+            return true;
+          });
+        return kept.join(", ") || null;
       },
     },
     {
@@ -693,10 +750,30 @@
     {
       key: "state",
       weight: 10,
-      match: [/\b(state|province|region|county)\b/i],
-      deny: [THIRD_PARTY, /united\s*states\b.*country|veteran|marital|employment\s*status/i],
+      /**
+       * "County" is not a state. It was in this rule's match list, so a form
+       * with both boxes — Workday's US address block has them — put "Florida"
+       * into County as well, and Workday rejected it.
+       */
+      match: [/\b(state|province|region)\b/i],
+      deny: [THIRD_PARTY, /united\s*states\b.*country|veteran|marital|employment\s*status/i,
+             denyOwn(/\bcounty\b/i)],
       type: ["text", "select"],
       value: (p) => P(p).state,
+    },
+    {
+      /**
+       * The administrative county. Only a handful of portals ask, nobody has it
+       * in a résumé, and guessing it from the state produces a value the portal
+       * rejects — so it comes from the profile or stays empty.
+       */
+      key: "county",
+      weight: 11,
+      match: [/\bcounty\b/i],
+      deny: [THIRD_PARTY, /country/i],
+      profileOnly: true,
+      type: ["text", "select"],
+      value: (p) => P(p).county || null,
     },
     {
       key: "zip",

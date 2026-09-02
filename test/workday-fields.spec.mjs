@@ -183,5 +183,64 @@ check("a file input is refused", M.opensFilePicker(fileInput), true);
 check("a label bound to one is refused", M.opensFilePicker(boundLabel), false || M.opensFilePicker(boundLabel));
 check("an ordinary text input is fine", M.opensFilePicker(new Node("input", { type: "text" })), false);
 
+/* ------------------------------------------------------------------ *
+ * Reported from a screen recording of nationalindemnity.wd5: every
+ * required TEXT box carried "is required and must have a value" while the
+ * dropdowns beside them (State, Phone Device Type) were accepted. Text was
+ * being assigned to `.value`; dropdowns are answered by clicking, which is a
+ * real interaction. Assignment makes the text appear without Workday's model
+ * ever recording it, so `execCommand("insertText")` — which runs through the
+ * browser's own editing pipeline — is now the primary path.
+ * ------------------------------------------------------------------ */
+
+console.log("\ntext is typed through the editing pipeline");
+let pipelineUsed = false;
+const typedNode = () => {
+  const node = new Node("input", { type: "text" });
+  node.setSelectionRange = () => {};
+  return node;
+};
+sb.document.execCommand = (cmd, _ui, value) => {
+  if (cmd !== "insertText") return false;
+  pipelineUsed = true;
+  lastTarget.value = value;
+  return true;
+};
+let lastTarget = typedNode();
+lastTarget.focus = function () { lastTarget = this; };
+const t = typedNode();
+lastTarget = t;
+check("a text box is written", M.setTextValue(t, "Pradeep"), true);
+check("  via the editing pipeline, not assignment", pipelineUsed, true);
+check("  and holds the value", t.value, "Pradeep");
+
+console.log("\nassignment still works when the pipeline refuses");
+sb.document.execCommand = () => false;
+const fallback = new Node("input", { type: "text" });
+check("falls back cleanly", M.setTextValue(fallback, "Reddy"), true);
+check("  and holds the value", fallback.value, "Reddy");
+
+console.log("\nCounty is not State");
+const R3 = sb.ZAPPLY_FIELD_MAP;
+const addrProfile = { personal: { state: "Florida", city: "Jacksonville", zip: "32216",
+  address: "8451 GATE PKWY W APT 128, City", addressLine2: "City, Jacksonville, Florida, 32216" } };
+const textControl = () => ({ tagName: "INPUT", type: "text", isContentEditable: false,
+  getAttribute: (k) => (k === "type" ? "text" : null), closest: () => null, querySelector: () => null });
+const pick = (label) => {
+  const rule = M.matchRule(textControl(), label, R3);
+  let v = null;
+  try { v = rule?.value(addrProfile, { closest: () => ({ querySelector: () => ({}), querySelectorAll: () => [] }), getAttribute: () => null }, label, 0) ?? null; } catch {}
+  return { key: rule?.key ?? "UNMATCHED", value: v };
+};
+check("County matches its own rule", pick("County | State | City").key, "county");
+check("County is not given the state", pick("County | State | City").value, null);
+check("State still fills", pick("State | County | City").value, "Florida");
+
+console.log("\naddress lines are cleaned");
+check("Line 1 is the street alone", pick("Address Line 1 | Address").value, "8451 GATE PKWY W APT 128");
+check("Line 2 drops the repeated postal tail", pick("Address Line 2 | Address").value, null);
+check("City still fills", pick("City | State").value, "Jacksonville");
+check("Postal Code still fills", pick("Postal Code | City").value, "32216");
+
 console.log(fails ? `\n${fails} failing\n` : "\nall passing\n");
 process.exit(fails ? 1 : 0);

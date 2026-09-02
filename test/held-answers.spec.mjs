@@ -106,5 +106,18 @@ await call({ type: "ZAPPLY_DISCARD_HELD", questions: ["A typo"] });
 check("discarded answer is gone", disk.heldAnswers.length, 0);
 check("and was never queued", disk.pendingResponses.length, 2);
 
+console.log("\nClear empties both buckets");
+await call({ type: "ZAPPLY_HOLD_ANSWERS", items: [{ question: "Held one", answer: "a" }, { question: "Held two", answer: "b" }] });
+check("something is held", disk.heldAnswers.length, 2);
+check("something is queued", disk.pendingResponses.length, 2);
+const cleared = await call({ type: "ZAPPLY_CLEAR_PENDING" });
+check("it reports clearing both", cleared.data.cleared, 4);
+check("held answers are gone", "heldAnswers" in disk, false);
+check("queued answers are gone", "pendingResponses" in disk, false);
+
+const after = await call({ type: "ZAPPLY_GET_HELD" });
+check("and nothing comes back on the next read", after.data.held.length, 0);
+check("the badge is empty", chrome.__badge, "");
+
 console.log(fails ? `\n${fails} failing\n` : "\nall passing\n");
 process.exit(fails ? 1 : 0);

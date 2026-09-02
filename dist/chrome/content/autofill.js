@@ -194,8 +194,7 @@
       if (Number.isInteger(fromHeading)) { field.index = fromHeading; anyHeading = true; }
     }
     const unresolved = family.filter((f) => !Number.isInteger(f.index));
-    if (!unresolved.length) return;
-    if (anyHeading && unresolved.length === family.length) return;
+    if (!unresolved.length) { reconcileRows(family); return; }
 
     // 2. Otherwise fall back to repeated containers around the anchor field.
     const counts = new Map();
@@ -205,6 +204,7 @@
       [...counts.entries()].sort((a, b) => b[1] - a[1]).filter(([, n]) => n > 1)[0]?.[0];
     if (!anchorKey) {
       unresolved.forEach((f) => { if (!Number.isInteger(f.index)) f.index = 0; });
+      reconcileRows(family);
       return;
     }
 
@@ -212,6 +212,7 @@
     const rows = M.rowsFromAnchors(anchors);
     if (rows.length < 2) {
       unresolved.forEach((f) => { if (!Number.isInteger(f.index)) f.index = 0; });
+      reconcileRows(family);
       return;
     }
 
@@ -219,6 +220,66 @@
       const i = rows.findIndex((row) => row.contains(field.el));
       field.index = i >= 0 ? i : 0;
     });
+
+    reconcileRows(family);
+  }
+
+  /**
+   * Every field in one row must carry the same index.
+   *
+   * Indexes are worked out per field, from whichever numbered heading each one
+   * happens to resolve to. Two boxes sitting in the same row can resolve
+   * differently — a heading nested one level deeper, a wrapper that breaks the
+   * ancestor walk — and then one field reads row 2 of the profile while the box
+   * beside it reads row 3. Where row 3 does not exist the lookup returns nothing
+   * and that single box is left blank, which is the Job Title empty beside a
+   * Company that filled from the same entry.
+   *
+   * The fields are grouped by the container they actually share and the row is
+   * given one index: the one most of its fields agree on, falling back to the
+   * row's position on the page. Disagreement inside a row is always a
+   * resolution error, never a real difference — a row describes one job.
+   */
+  function reconcileRows(family) {
+    const groups = new Map();
+    for (const field of family) {
+      const row = rowContainerOf(field.el, family);
+      if (!row) continue;
+      if (!groups.has(row)) groups.set(row, []);
+      groups.get(row).push(field);
+    }
+    if (groups.size < 2) return;
+
+    // Page order decides the fallback numbering.
+    const ordered = [...groups.entries()].sort((a, b) => {
+      const pos = a[0].compareDocumentPosition(b[0]);
+      return pos & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : pos & Node.DOCUMENT_POSITION_PRECEDING ? 1 : 0;
+    });
+
+    ordered.forEach(([, members], ordinal) => {
+      const votes = new Map();
+      members.forEach((f) => {
+        if (!Number.isInteger(f.index)) return;
+        votes.set(f.index, (votes.get(f.index) || 0) + 1);
+      });
+      let agreed = ordinal;
+      let best = 0;
+      for (const [value, count] of votes) {
+        if (count > best) { best = count; agreed = value; }
+      }
+      members.forEach((f) => { f.index = agreed; });
+    });
+  }
+
+  /** The smallest ancestor that holds this field and no other row's fields. */
+  function rowContainerOf(el, family) {
+    let node = el.parentElement;
+    for (let depth = 0; node && depth < 8; depth++, node = node.parentElement) {
+      const inside = family.filter((f) => node.contains(f.el));
+      // A row holds several of the row's own fields but not all of them.
+      if (inside.length >= 2 && inside.length < family.length) return node;
+    }
+    return null;
   }
 
   /** Controls a person could actually answer — used to size up a candidate root. */
@@ -841,6 +902,19 @@
      */
     if (field?.rule?.blank) return null;
     if (field?.rule?.identity && !field.rule.eeo) return null;
+
+    /**
+     * Never into a contact or identity box, rule or no rule.
+     *
+     * The guard above only fires when a rule matched. When one did not — which
+     * is exactly what happened to Workday's Phone Number box — the field was
+     * open to any saved answer whose question looked similar, and it collected
+     * the email address. These boxes have one source: the profile.
+     */
+    if (/\b(e-?mail|phone|mobile|telephone|country\s*code|area\s*code|extension|first\s*name|last\s*name|middle\s*name|full\s*name|date\s*of\s*birth|address\s*line|postal|zip\s*code)\b/i
+        .test(String(field?.label ?? "").split("|")[0])) {
+      return null;
+    }
 
     /**
      * For a disclosure question the saved answer has to reduce to a real
@@ -2241,9 +2315,7 @@
     });
     (state.allFields ?? []).forEach((field) => {
       if (field.kind === "file") return;
-      // Profile-owned fields are watched as well; the sweep still refuses to
-      // bank one without a proven edit, so watching them costs nothing and is
-      // what makes a hand-typed correction to a name or address savable.
+      if (field.rule && PROFILE_OWNED_KEYS.has(field.rule.key)) return;
       captureOn(field);
     });
   }
@@ -2381,14 +2453,15 @@
         const label = M.deriveLabel(el);
         const rule = M.matchRule(el, label, RULES);
         /**
-         * Profile-owned fields are watched too.
-         *
-         * They used to be ignored outright, which meant correcting a name, an
-         * address or a job row by hand produced nothing to save — and those are
-         * exactly the corrections worth keeping. They are still not *banked*
-         * automatically; they are held like any other edit, and the applicant
-         * decides. What they must not do is silently vanish.
+         * Profile-owned fields are not banked as answers. This was opened up in
+         * 1.8.0 so hand-corrections could be saved, and that was a mistake: an
+         * email address captured off one form is an *answer* to a question whose
+         * wording resembles half the contact boxes on the next one, so it came
+         * back in the phone field. Contact details and identity belong in the
+         * profile, which is the only place they can be stored once and used
+         * everywhere without being matched by question text.
          */
+        if (rule && PROFILE_OWNED_KEYS.has(rule.key)) { el.__zapplyIgnored = true; return; }
         captureOn({ el, label, kind: M.fieldKind(el), rule });
       } catch {}
     }, true);

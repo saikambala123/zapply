@@ -482,14 +482,41 @@
       // OR'd against each description separately.
       if (rule.require && !rule.require.test(label)) continue;
 
+      /**
+       * Where the match landed decides how much it counts.
+       *
+       * `haystacks[0]` is the joined label — the field's own text *plus* the
+       * section heading and whatever the portal renders nearby. The rest are
+       * the individual descriptions, and `haystacks[1]` is the field's own.
+       *
+       * Matching only the joined string used to count exactly as much as
+       * matching the field's own label, and that is how Workday's phone block
+       * broke: it renders "Country Phone Code" directly above "Phone Number",
+       * that text lands in the joined label, and `phoneCountryCode` — two
+       * weights above `phone` — claimed the Phone Number box on the strength of
+       * its neighbour's name. The number then went into the country-code box and
+       * the phone box fell through to whatever the saved answers offered.
+       *
+       * A rule that matches the field's own description now outranks one that
+       * only matched the surroundings. Rules that deliberately span two
+       * descriptions still work — "Work Experience 2" plus "Location" — because
+       * a joined-only match still counts, just for less.
+       */
       let hitIndex = -1;
-      for (const hay of haystacks) {
+      let placeBonus = 0;
+      haystacks.forEach((hay, position) => {
         const i = rule.match.findIndex((re) => re.test(hay));
-        if (i !== -1 && (hitIndex === -1 || i < hitIndex)) hitIndex = i;
-      }
+        if (i === -1) return;
+        // haystacks[0] is the joined text, [1] is the field's own primary
+        // description, and the rest are the surroundings — the section heading
+        // and the labels of neighbouring fields.
+        const bonus = position === 1 ? 40 : position > 1 ? 12 : 0;
+        if (bonus > placeBonus) placeBonus = bonus;
+        if (hitIndex === -1 || i < hitIndex) hitIndex = i;
+      });
       if (hitIndex === -1) continue;
 
-      const score = (rule.weight ?? 5) * 10 - hitIndex;
+      const score = (rule.weight ?? 5) * 10 - hitIndex + placeBonus;
       if (score > bestScore) {
         bestScore = score;
         best = rule;
@@ -894,24 +921,49 @@
     let changed = false;
     const previous = String(el.value ?? "");
     const setter = nativeSetter(el);
-    try {
-      if (el.isContentEditable && el.tagName !== "INPUT" && el.tagName !== "TEXTAREA") {
-        el.textContent = text;
-        changed = clean(el.textContent) === clean(text);
-      } else if (setter) {
-        setter.call(el, text);
-        changed = String(el.value ?? "") === text;
-      } else {
-        el.value = text;
-        changed = String(el.value ?? "") === text;
-      }
-    } catch {}
+    const isRichEditor = el.isContentEditable && el.tagName !== "INPUT" && el.tagName !== "TEXTAREA";
+
+    /**
+     * Type it, rather than assign it.
+     *
+     * `execCommand("insertText")` runs through the browser's own editing
+     * pipeline, so the page receives the same native `beforeinput` and `input`
+     * events a person's keystrokes produce. Assigning `.value` and dispatching
+     * synthetic events does not: the text appears, but Workday's model never
+     * records it, and pressing Next reports "The field First Name is required
+     * and must have a value" under a box plainly containing a name.
+     *
+     * The giveaway was which fields failed. Every dropdown committed — State,
+     * Phone Device Type — and every required *text* box did not. Dropdowns are
+     * answered by clicking, which is already a real interaction. Text boxes were
+     * the only things being written by assignment.
+     *
+     * This was already here as a fallback, reached only when assignment failed
+     * to change the value. Assignment always succeeded, so it never ran.
+     */
+    if (!isRichEditor) {
+      try {
+        const length = String(el.value ?? "").length;
+        el.setSelectionRange?.(0, length);
+        if (!length && typeof el.select === "function") el.select();
+        if (document.execCommand && document.execCommand("insertText", false, text)) {
+          changed = String(el.value ?? "") === text;
+        }
+      } catch {}
+    }
 
     if (!changed) {
       try {
-        if (typeof el.select === "function") el.select();
-        if (document.execCommand) document.execCommand("insertText", false, text);
-        changed = String(el.value ?? "") === text;
+        if (isRichEditor) {
+          el.textContent = text;
+          changed = clean(el.textContent) === clean(text);
+        } else if (setter) {
+          setter.call(el, text);
+          changed = String(el.value ?? "") === text;
+        } else {
+          el.value = text;
+          changed = String(el.value ?? "") === text;
+        }
       } catch {}
     }
 
@@ -1022,9 +1074,21 @@
       } catch {}
     };
 
-    write("");
-    fire(el, "input");
-    write(text);
+    // Same reasoning as `setTextValue`: type it through the editing pipeline
+    // first, because that is what Workday's model actually listens to.
+    let typed = false;
+    try {
+      el.setSelectionRange?.(0, String(el.value ?? "").length);
+      if (document.execCommand && document.execCommand("insertText", false, text)) {
+        typed = String(el.value ?? "") === text;
+      }
+    } catch {}
+
+    if (!typed) {
+      write("");
+      fire(el, "input");
+      write(text);
+    }
     /**
      * Key events either side of the input.
      *

@@ -10,7 +10,7 @@
     "lint": "next lint",
     "seed": "node --env-file=.env.local scripts/seed.mjs",
     "ext:build": "node scripts/build-extension.mjs",
-    "ext:test": "node test/self-id.spec.mjs && node test/held-answers.spec.mjs && node test/workday-fields.spec.mjs && node test/autofill.spec.mjs && node test/scope.spec.mjs && node test/segmented.spec.mjs && node test/workday.spec.mjs && node test/workday-flow.spec.mjs && node test/workday-experience.spec.mjs && node test/workday-address.spec.mjs && node test/greenhouse-rows.spec.mjs && node test/eligibility.spec.mjs && node test/capture.spec.mjs && node test/capture-types.spec.mjs && node test/settings.spec.mjs && node test/background.spec.mjs",
+    "ext:test": "node test/self-id.spec.mjs && node test/row-index.spec.mjs && node test/held-answers.spec.mjs && node test/workday-fields.spec.mjs && node test/autofill.spec.mjs && node test/scope.spec.mjs && node test/segmented.spec.mjs && node test/workday.spec.mjs && node test/workday-flow.spec.mjs && node test/workday-experience.spec.mjs && node test/workday-address.spec.mjs && node test/greenhouse-rows.spec.mjs && node test/eligibility.spec.mjs && node test/capture.spec.mjs && node test/capture-types.spec.mjs && node test/settings.spec.mjs && node test/background.spec.mjs",
     "test:api": "node test/api-regressions.spec.mjs",
     "test": "npm run ext:test && npm run test:api && npm run test:ui",
     "ext:compare": "node test/compare.mjs",

@@ -349,12 +349,19 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
       }
 
       case "ZAPPLY_CLEAR_PENDING": {
-        const { pendingResponses, session } = await store.get(["pendingResponses", "session"]);
-        const cleared = pendingResponses?.length ?? 0;
-        await store.remove(["pendingResponses"]);
-        // The badge counts pending answers, so it goes back to the connection
-        // state it would show with an empty queue.
-        setBadge(session?.profile ? "" : "!", session?.profile ? "#00C2A8" : "#FFB020");
+        const { pendingResponses, heldAnswers } = await store.get(["pendingResponses", "heldAnswers"]);
+        /**
+         * Clear means clear.
+         *
+         * This only removed `pendingResponses`. Held answers were added later
+         * and live in their own key, so they survived every Clear and were
+         * counted and listed again the moment the popup reopened — the same
+         * answers coming back "again and again" however many times Clear was
+         * confirmed.
+         */
+        const cleared = (pendingResponses?.length ?? 0) + (heldAnswers?.length ?? 0);
+        await store.remove(["pendingResponses", "heldAnswers"]);
+        await refreshBadge();
         return respond({ ok: true, data: { cleared } });
       }
 

@@ -245,5 +245,37 @@ check("nothing recorded stays blank", auth.value({ workAuth: {} }) || null, null
 check("inverted phrasing, citizen", spon.value({ workAuth: { workAuthType: "U.S. Citizen" } }, null, "Are you able to work without sponsorship?"), "Yes");
 check("inverted phrasing, needs sponsorship", spon.value({ workAuth: { requireSponsorship: "Yes" } }, null, "Are you able to work without sponsorship?"), "No");
 
+/* ------------------------------------------------------------------ *
+ * Workday's contact block.
+ *
+ * It renders Country Phone Code, Phone Number, Phone Device Type and Email
+ * beside each other, so every one of those labels lands in every field's
+ * derived label. Denials are tested against that whole string, so `phone`'s
+ * deny on /country|type/ fired on the phone box itself: the rule was skipped,
+ * the box fell through to saved answers, and it came back holding the email
+ * address while the number went into the country-code box.
+ * ------------------------------------------------------------------ */
+
+console.log("\nWorkday contact block");
+const CONTACT = { personal: { email: "a@b.com", phone: "(425) 444-0364", phoneCountryCode: "+1" } };
+const contactCase = (label, wantKey, wantValue) => {
+  const control = el();
+  const rule = M.matchRule(control, label, RULES);
+  check(`${label.split("|")[0].trim()} -> ${wantKey}`, rule?.key ?? "UNMATCHED", wantKey);
+  if (!rule) return;
+  let v = null;
+  try { v = rule.value(CONTACT, control, label, 0) ?? null; } catch {}
+  check(`  ...and fills ${JSON.stringify(wantValue)}`, v, wantValue);
+};
+contactCase("Phone Number | Country Phone Code | Phone Device Type", "phone", "(425) 444-0364");
+contactCase("Country Phone Code | Phone Number | Phone Device Type", "phoneCountryCode", "+1");
+contactCase("Email Address | Phone Number | Country Phone Code", "email", "a@b.com");
+contactCase("Phone Extension | Phone Number | Country Phone Code", "phoneExtension", null);
+
+console.log("\na rule matching the field's own label beats one matching its neighbours");
+check("First Name among its siblings", M.matchRule(el(), "First Name | Middle Name | Last Name", RULES)?.key, "firstName");
+check("Last Name among its siblings", M.matchRule(el(), "Last Name | First Name | Middle Name", RULES)?.key, "lastName");
+check("rules spanning two descriptions still work", M.matchRule(el(), "Location | Work Experience 2", RULES)?.key, "experienceLocation");
+
 console.log(fails ? `\n${fails} failing\n` : "\nall passing\n");
 process.exit(fails ? 1 : 0);
