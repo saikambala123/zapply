@@ -119,5 +119,36 @@ const after = await call({ type: "ZAPPLY_GET_HELD" });
 check("and nothing comes back on the next read", after.data.held.length, 0);
 check("the badge is empty", chrome.__badge, "");
 
+console.log("\na dismissed answer cannot come back on the next form");
+await call({ type: "ZAPPLY_HOLD_ANSWERS", items: [{ question: "Why this company?", answer: "draft" }] });
+check("it is held", disk.heldAnswers.length, 1);
+await call({ type: "ZAPPLY_DISCARD_HELD", questions: ["Why this company?"] });
+check("discarding empties the list", disk.heldAnswers.length, 0);
+
+// The same question, captured again while filling a different application.
+await call({ type: "ZAPPLY_HOLD_ANSWERS", items: [{ question: "Why this company?", answer: "draft" }] });
+check("it does not come back", disk.heldAnswers.length, 0);
+await call({ type: "ZAPPLY_HOLD_ANSWERS", items: [{ question: "  WHY THIS COMPANY?  ", answer: "draft" }] });
+check("nor in different casing or spacing", disk.heldAnswers.length, 0);
+
+console.log("\nbut a new question is unaffected");
+await call({ type: "ZAPPLY_HOLD_ANSWERS", items: [{ question: "Notice period?", answer: "2 weeks" }] });
+check("a different question is still held", disk.heldAnswers.length, 1);
+
+console.log("\nsaving one later lifts its dismissal");
+await call({ type: "ZAPPLY_DISCARD_HELD", questions: ["Notice period?"] });
+await call({ type: "ZAPPLY_HOLD_ANSWERS", items: [{ question: "Notice period?", answer: "2 weeks" }] });
+check("dismissed, so not held", disk.heldAnswers.length, 0);
+await call({ type: "ZAPPLY_HOLD_ANSWERS", items: [{ question: "Fresh question", answer: "x" }] });
+await call({ type: "ZAPPLY_SAVE_HELD", questions: ["Fresh question"] });
+// queueKey strips punctuation and stop-words, so the stored key is "notice period".
+check("saving a different one leaves the dismissal alone", disk.dismissedAnswers.includes("notice period"), true);
+
+console.log("\nClear also dismisses what it clears");
+await call({ type: "ZAPPLY_HOLD_ANSWERS", items: [{ question: "Salary expectation?", answer: "n/a" }] });
+await call({ type: "ZAPPLY_CLEAR_PENDING" });
+await call({ type: "ZAPPLY_HOLD_ANSWERS", items: [{ question: "Salary expectation?", answer: "n/a" }] });
+check("a cleared answer stays gone", (disk.heldAnswers ?? []).length, 0);
+
 console.log(fails ? `\n${fails} failing\n` : "\nall passing\n");
 process.exit(fails ? 1 : 0);

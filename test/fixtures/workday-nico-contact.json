@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "capturedAt": "2026-09-02T00:00:00.000Z",
+  "ats": "workday",
+  "page": "nationalindemnity.wd5.myworkdayjobs.com/en-US/NICO/job",
+  "note": "Reconstructed from the reported screen recording: the contact step where every required text box was rejected, County took the state, and Phone Number held the email address.",
+  "fieldCount": 14,
+  "fields": [
+    { "tag": "select", "heading": "", "label": "Country | Country", "options": ["Select One", "United States of America", "India", "Canada"], "attrs": { "data-automation-id": "countryDropdown" }, "expect": "country" },
+
+    { "tag": "input", "heading": "Name", "label": "First Name | Name | Middle Name | Last Name", "options": [], "attrs": { "type": "text", "data-automation-id": "legalNameSection_firstName", "required": "true" }, "expect": "firstName" },
+    { "tag": "input", "heading": "Name", "label": "Middle Name | Name | First Name | Last Name", "options": [], "attrs": { "type": "text", "data-automation-id": "legalNameSection_middleName" }, "expect": "middleName" },
+    { "tag": "input", "heading": "Name", "label": "Last Name | Name | First Name | Middle Name", "options": [], "attrs": { "type": "text", "data-automation-id": "legalNameSection_lastName", "required": "true" }, "expect": "lastName" },
+
+    { "tag": "input", "heading": "Address", "label": "Address Line 1 | Address | Address Line 2 | City | State | Postal Code | County", "options": [], "attrs": { "type": "text", "data-automation-id": "addressSection_addressLine1", "required": "true" }, "expect": "address" },
+    { "tag": "input", "heading": "Address", "label": "Address Line 2 | Address | Address Line 1 | City", "options": [], "attrs": { "type": "text", "data-automation-id": "addressSection_addressLine2" }, "expect": "addressLine2" },
+    { "tag": "input", "heading": "Address", "label": "City | Address | State | Postal Code | County", "options": [], "attrs": { "type": "text", "data-automation-id": "addressSection_city", "required": "true" }, "expect": "city" },
+    { "tag": "select", "heading": "Address", "label": "State | Address | City | Postal Code | County", "options": ["Select One", "Florida", "Washington", "Nebraska"], "attrs": { "data-automation-id": "addressSection_countryRegion", "required": "true" }, "expect": "state" },
+    { "tag": "input", "heading": "Address", "label": "Postal Code | Address | City | State | County", "options": [], "attrs": { "type": "text", "data-automation-id": "addressSection_postalCode", "required": "true" }, "expect": "zip" },
+    { "tag": "input", "heading": "Address", "label": "County | Address | City | State | Postal Code", "options": [], "attrs": { "type": "text", "data-automation-id": "addressSection_regionSubdivision1", "required": "true" }, "expect": "county" },
+
+    { "tag": "select", "heading": "Phone", "label": "Phone Device Type | Phone | Country Phone Code | Phone Number | Phone Extension", "options": ["Select One", "Mobile", "Home", "Work"], "attrs": { "data-automation-id": "phone-device-type", "required": "true" }, "expect": "phoneType" },
+    { "tag": "select", "heading": "Phone", "label": "Country Phone Code | Phone | Phone Device Type | Phone Number | Phone Extension", "options": ["Select One", "United States of America (+1)", "India (+91)"], "attrs": { "data-automation-id": "country-phone-code", "required": "true" }, "expect": "phoneCountryCode" },
+    { "tag": "input", "heading": "Phone", "label": "Phone Number | Phone | Phone Device Type | Country Phone Code | Phone Extension", "options": [], "attrs": { "type": "text", "data-automation-id": "phone-number", "required": "true" }, "expect": "phone" },
+    { "tag": "input", "heading": "Phone", "label": "Phone Extension | Phone | Phone Number | Country Phone Code", "options": [], "attrs": { "type": "text", "data-automation-id": "phone-extension" }, "expect": "phoneExtension" }
+  ]
+}

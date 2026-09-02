@@ -208,7 +208,7 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
       }
 
       case "ZAPPLY_UNPAIR": {
-        await store.remove(["token", "user", "session", "sessionAt", "pendingResponses", "heldAnswers"]);
+        await store.remove(["token", "user", "session", "sessionAt", "pendingResponses", "heldAnswers", "dismissedAnswers"]);
         setBadge("");
         return respond({ ok: true });
       }
@@ -245,13 +245,43 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
        * saving moves an answer into `pendingResponses`, which is still only
        * sent on an explicit Sync.
        */
+      /**
+       * Fill outcomes. Fire-and-forget: measuring accuracy must never be able to
+       * interrupt an application, so a failure here is swallowed rather than
+       * surfaced. They are dropped, not queued, if the request fails — a lost
+       * sample costs nothing, a blocked applicant costs a job.
+       */
+      case "ZAPPLY_FIELD_OUTCOMES": {
+        try {
+          await api("/api/telemetry/fields", {
+            method: "POST",
+            body: JSON.stringify({ ats: msg.ats, items: (msg.items ?? []).slice(0, 300) }),
+          });
+        } catch {}
+        return respond({ ok: true });
+      }
+
       case "ZAPPLY_HOLD_ANSWERS": {
-        const { heldAnswers } = await store.get("heldAnswers");
+        const { heldAnswers, dismissedAnswers } = await store.get(["heldAnswers", "dismissedAnswers"]);
+        /**
+         * A dismissal is remembered.
+         *
+         * Discarding an answer only deleted it from storage, and nothing recorded
+         * that it had been turned down. The same question on the next
+         * application — and application forms ask the same questions — captured
+         * it again and put it straight back in the list, so clearing appeared to
+         * do nothing however many times it was confirmed.
+         *
+         * Dismissed questions are skipped on capture from then on. Saving one
+         * later clears the dismissal, so this is a "not this" rather than a
+         * "never again".
+         */
+        const dismissed = new Set(dismissedAnswers ?? []);
         const merged = new Map((heldAnswers ?? []).map((r) => [queueKey(r.question), r]));
         for (const r of (msg.items ?? [])) {
           if (!r?.question || !String(r.answer ?? "").trim()) continue;
           const key = queueKey(r.question);
-          if (!key) continue;
+          if (!key || dismissed.has(key)) continue;
           merged.set(key, { ...r, heldAt: Date.now() });
         }
         const held = Array.from(merged.values()).slice(-200);
@@ -278,21 +308,36 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
         const merged = new Map((pendingResponses ?? []).map((r) => [queueKey(r.question), r]));
         for (const r of moving) merged.set(queueKey(r.question), { ...r, queuedAt: Date.now() });
 
+        const { dismissedAnswers: previouslyDismissed } = await store.get("dismissedAnswers");
+        const stillDismissed = new Set(previouslyDismissed ?? []);
+        moving.forEach((r) => stillDismissed.delete(queueKey(r.question)));
+
         await store.set({
           heldAnswers: keeping,
           pendingResponses: Array.from(merged.values()).slice(-500),
+          dismissedAnswers: Array.from(stillDismissed),
         });
         await refreshBadge();
         return respond({ ok: true, saved: moving.length });
       }
 
       case "ZAPPLY_DISCARD_HELD": {
-        const { heldAnswers } = await store.get("heldAnswers");
+        const { heldAnswers, dismissedAnswers } = await store.get(["heldAnswers", "dismissedAnswers"]);
+        const held = heldAnswers ?? [];
         const wanted = msg.questions?.length ? new Set(msg.questions.map((q) => queueKey(q))) : null;
-        const keeping = wanted ? (heldAnswers ?? []).filter((r) => !wanted.has(queueKey(r.question))) : [];
-        await store.set({ heldAnswers: keeping });
+        const dropping = wanted ? held.filter((r) => wanted.has(queueKey(r.question))) : held;
+        const keeping = wanted ? held.filter((r) => !wanted.has(queueKey(r.question))) : [];
+
+        const dismissed = new Set(dismissedAnswers ?? []);
+        dropping.forEach((r) => { const k = queueKey(r.question); if (k) dismissed.add(k); });
+        (msg.questions ?? []).forEach((q) => { const k = queueKey(q); if (k) dismissed.add(k); });
+
+        await store.set({
+          heldAnswers: keeping,
+          dismissedAnswers: Array.from(dismissed).slice(-500),
+        });
         await refreshBadge();
-        return respond({ ok: true });
+        return respond({ ok: true, dismissed: dismissed.size });
       }
 
       case "ZAPPLY_QUEUE_RESPONSES": {
@@ -360,7 +405,13 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
          * confirmed.
          */
         const cleared = (pendingResponses?.length ?? 0) + (heldAnswers?.length ?? 0);
+        // Everything cleared is also remembered as turned down, so it cannot be
+        // recaptured on the next form and reappear.
+        const { dismissedAnswers } = await store.get("dismissedAnswers");
+        const dismissed = new Set(dismissedAnswers ?? []);
+        (heldAnswers ?? []).forEach((r) => { const k = queueKey(r.question); if (k) dismissed.add(k); });
         await store.remove(["pendingResponses", "heldAnswers"]);
+        await store.set({ dismissedAnswers: Array.from(dismissed).slice(-500) });
         await refreshBadge();
         return respond({ ok: true, data: { cleared } });
       }
