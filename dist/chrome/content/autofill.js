@@ -67,30 +67,6 @@
     if (msg?.type?.startsWith("ZAPPLY_PENDING")) {
       if (handlePendingCommand(msg, respond)) return true;
     }
-    /**
-     * Capture the form as a test fixture.
-     *
-     * Answered from the top frame only; an application split across iframes
-     * would otherwise return whichever frame replied first.
-     */
-    if (msg?.type === "ZAPPLY_REVIEW") {
-      try {
-        const rows = buildReviewRows(state.applied, state.unmatched);
-        if (rows.length) review.open(rows);
-        respond({ ok: true, count: rows.length });
-      } catch (e) {
-        respond({ ok: false, error: String(e?.message || e) });
-      }
-      return true;
-    }
-    if (msg?.type === "ZAPPLY_CAPTURE_FORM") {
-      try {
-        respond({ ok: true, fixture: window.ZAPPLY_CAPTURE?.captureForm?.() ?? null });
-      } catch (e) {
-        respond({ ok: false, error: String(e?.message || e) });
-      }
-      return true;
-    }
     if (msg?.type === "ZAPPLY_RUN") {
       if (window.top !== window) return respond({ ok: true, data: { child: true } });
       relayToChildFrames("ZAPPLY_RUN");
@@ -1032,67 +1008,7 @@
    * already searches, filters and drills inside a single opening, and calling
    * it twice is exactly what produced the visible open/close flicker.
    */
-  /**
-   * What happened to each field, so accuracy can be measured instead of guessed.
-   *
-   * Fill accuracy is the whole value of this extension, and nothing measured it.
-   * Every accuracy bug — the wrong veteran option, an email in a phone box, a
-   * date arriving as "MM/2022" — reached the applicant before it reached anyone
-   * who could fix it, and was reported by hand from a photograph of a screen.
-   *
-   * A correction is the signal that matters: a field we filled and the applicant
-   * then retyped is a field we got wrong, and they have just shown us the shape
-   * of the mistake. Note that only the *label*, the rule and the outcome travel
-   * — never the value. A corrections log that recorded values would become a
-   * copy of every name, address and disclosure the extension has ever touched.
-   */
-  const outcomes = new Map();
-
-  function noteOutcome(field, patch) {
-    const label = String(field?.label ?? "").split("|")[0].trim();
-    if (!label || field?.kind === "file") return;
-    const existing = outcomes.get(field.el) ?? {
-      label,
-      ruleKey: field.rule?.key ?? null,
-      source: "unmatched",
-      inputType: field.kind || "text",
-      filled: false,
-      corrected: false,
-      blank: false,
-      rejected: false,
-    };
-    outcomes.set(field.el, { ...existing, ...patch, label });
-  }
-
-  /** Mark a field the applicant retyped after we filled it. */
-  function noteCorrection(el) {
-    const row = outcomes.get(el);
-    if (row?.filled) outcomes.set(el, { ...row, corrected: true });
-  }
-
-  /** Mark a field the page rejected, whatever we put in it. */
-  function noteRejections() {
-    for (const [el, row] of outcomes) {
-      if (!row.filled || row.rejected) continue;
-      try { if (M.flaggedInvalid?.(el)) outcomes.set(el, { ...row, rejected: true }); } catch {}
-    }
-  }
-
-  function collectOutcomes() {
-    noteRejections();
-    return Array.from(outcomes.values()).map((row) => ({
-      label: row.label.slice(0, 500),
-      ruleKey: row.ruleKey,
-      source: row.source,
-      inputType: row.inputType,
-      filled: row.filled,
-      corrected: row.corrected,
-      blank: row.blank,
-      rejected: row.rejected,
-    }));
-  }
-
-  async function applyValue(field, value, rule, source = "profile") {
+  async function applyValue(field, value, rule) {
     const el = field.el;
     if (el.__zapplyUserEdited) return false;
     if (!document.contains(el)) return false;
@@ -1145,8 +1061,7 @@
         // every settle pass — visible flicker for a result that cannot change.
         let readable = false;
         try { readable = M.hasValue(el); } catch {}
-        (state.applied ??= new Map()).set(el, { field, value, rule, readable, source });
-        noteOutcome(field, { source, ruleKey: rule?.key ?? null, filled: true });
+        (state.applied ??= new Map()).set(el, { field, value, rule, readable });
       } catch {}
       // Remembered so the answer sweep can tell our own writing apart from the
       // applicant's. Without it, every field Zapply filled would be queued as
@@ -1455,7 +1370,7 @@
         continue;
       }
 
-      const ok = await applyValue(field, answer, null, "ai");
+      const ok = await applyValue(field, answer, null);
 
       if (ok) {
         done++;
@@ -1472,190 +1387,6 @@
   /* ================================================================== */
   /*  The run                                                            */
   /* ================================================================== */
-
-  /* ------------------------------------------------------------------ */
-  /*  Pre-submit review                                                  */
-  /* ------------------------------------------------------------------ */
-
-  /**
-   * What is about to be submitted, and where each answer came from.
-   *
-   * Until now the order of events was: fill, press Next, let the portal tell the
-   * applicant what is wrong, then hunt for red boxes. Every problem in this
-   * project was discovered that way — the veteran declaration, the drafted
-   * sentence in a Location box, the email in a phone field. All of them were
-   * visible on screen before submission and none of them were pointed out.
-   *
-   * This inverts it. The panel lists every field the fill touched, what is in it
-   * now, and which source it came from, with the ones worth a second look at the
-   * top. It is a read-only summary — clicking a row jumps to the field so the
-   * applicant edits the form itself, not a copy of it.
-   *
-   * Values are shown here and nowhere else: this is the applicant's own data, in
-   * their own browser, and the whole point is that they see it before an employer
-   * does. Nothing from this panel is transmitted.
-   */
-
-  /** Ranked worst-first: a wrong answer is worse than a missing one. */
-  const REVIEW_RANK = { rejected: 0, drafted: 1, missing: 2, saved: 3, profile: 4 };
-
-  function reviewStatus(row) {
-    if (row.rejected) return "rejected";
-    if (row.blank) return row.required ? "missing" : "optional";
-    if (row.source === "ai") return "drafted";
-    if (row.source === "saved") return "saved";
-    return "profile";
-  }
-
-  const REVIEW_NOTE = {
-    rejected: "The form rejected this",
-    drafted: "Written for you — check it",
-    missing: "Required, and still empty",
-    optional: "Left empty",
-    saved: "From a saved answer",
-    profile: "From your profile",
-  };
-
-  /**
-   * Build the review rows. Kept free of DOM construction so the ordering and
-   * the risk classification can be tested without a browser.
-   */
-  function buildReviewRows(applied, unmatched) {
-    const rows = [];
-
-    for (const [el, record] of applied ?? []) {
-      const label = String(record.field?.label ?? "").split("|")[0].trim();
-      if (!label) continue;
-      let current = "";
-      try { current = String(readValue(record.field) ?? ""); } catch {}
-      let rejected = false;
-      try { rejected = Boolean(M.flaggedInvalid?.(el)); } catch {}
-
-      rows.push({
-        el,
-        label,
-        value: current || String(record.value ?? ""),
-        source: record.source ?? "profile",
-        ruleKey: record.rule?.key ?? null,
-        blank: false,
-        rejected,
-        required: (() => { try { return Boolean(M.isRequired?.(el)); } catch { return false; } })(),
-      });
-    }
-
-    for (const field of unmatched ?? []) {
-      const label = String(field?.label ?? "").split("|")[0].trim();
-      if (!label || field.kind === "file") continue;
-      try { if (M.hasValue(field.el)) continue; } catch {}
-      rows.push({
-        el: field.el,
-        label,
-        value: "",
-        source: "unmatched",
-        ruleKey: null,
-        blank: true,
-        rejected: false,
-        required: (() => { try { return Boolean(M.isRequired?.(field.el)); } catch { return false; } })(),
-      });
-    }
-
-    for (const row of rows) row.status = reviewStatus(row);
-
-    // Worst first, and stable within a status so the list does not reshuffle
-    // between renders while someone is reading it.
-    return rows
-      .map((row, i) => ({ row, i }))
-      .sort((a, b) => {
-        const d = (REVIEW_RANK[a.row.status] ?? 9) - (REVIEW_RANK[b.row.status] ?? 9);
-        return d !== 0 ? d : a.i - b.i;
-      })
-      .map(({ row }) => row);
-  }
-
-  const review = {
-    node: null,
-
-    open(rows) {
-      if (!rows.length) return;
-      this.close();
-
-      const needs = rows.filter((r) => REVIEW_RANK[r.status] <= 2).length;
-      const el = document.createElement("div");
-      el.className = "zapply-review";
-      el.setAttribute("role", "dialog");
-      el.setAttribute("aria-label", "Review before you submit");
-
-      const head = document.createElement("div");
-      head.className = "zapply-review__head";
-      head.innerHTML = `
-        <div>
-          <p class="zapply-review__title">Before you submit</p>
-          <p class="zapply-review__sub">${rows.length} field${rows.length === 1 ? "" : "s"}${
-            needs ? ` · <b>${needs} worth checking</b>` : " · nothing flagged"
-          }</p>
-        </div>`;
-      const close = document.createElement("button");
-      close.className = "zapply-review__close";
-      close.type = "button";
-      close.setAttribute("aria-label", "Close review");
-      close.textContent = "\u00d7";
-      close.addEventListener("click", () => this.close());
-      head.appendChild(close);
-
-      const list = document.createElement("ul");
-      list.className = "zapply-review__list";
-
-      for (const row of rows) {
-        const li = document.createElement("li");
-        li.className = `zapply-review__row zapply-review__row--${row.status}`;
-
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "zapply-review__jump";
-        // Jumping to the field rather than editing here: the form is the source
-        // of truth, and an edit box in a panel would be a second place for the
-        // same answer to live.
-        button.addEventListener("click", () => this.jump(row.el));
-
-        const label = document.createElement("span");
-        label.className = "zapply-review__label";
-        label.textContent = row.label;
-
-        const value = document.createElement("span");
-        value.className = "zapply-review__value";
-        value.textContent = row.value
-          ? row.value.length > 90 ? `${row.value.slice(0, 90)}\u2026` : row.value
-          : "empty";
-        if (!row.value) value.classList.add("zapply-review__value--empty");
-
-        const note = document.createElement("span");
-        note.className = "zapply-review__note";
-        note.textContent = REVIEW_NOTE[row.status] ?? row.status;
-
-        button.append(label, value, note);
-        li.appendChild(button);
-        list.appendChild(li);
-      }
-
-      el.append(head, list);
-      (document.body || document.documentElement).appendChild(el);
-      this.node = el;
-    },
-
-    jump(el) {
-      try {
-        el.scrollIntoView({ behavior: "smooth", block: "center" });
-        el.classList.add("zapply-review-flash");
-        setTimeout(() => el.classList.remove("zapply-review-flash"), 1600);
-        el.focus?.({ preventScroll: true });
-      } catch {}
-    },
-
-    close() {
-      this.node?.remove();
-      this.node = null;
-    },
-  };
 
   async function run({ manual = false } = {}) {
     /**
@@ -1816,7 +1547,7 @@
         if (isMenuField(field)) await M.waitForMenusClosed(600);
 
         let ok = false;
-        try { ok = await applyValue(field, plan.value, plan.rule, plan.source ?? "profile"); } catch { ok = false; }
+        try { ok = await applyValue(field, plan.value, plan.rule); } catch { ok = false; }
 
         if (ok) {
           result.filled++;
@@ -1921,7 +1652,7 @@
           if (isMenuField(field)) await M.waitForMenusClosed(600);
 
           let ok = false;
-          try { ok = await applyValue(field, plan.value, plan.rule, plan.source ?? "profile"); } catch { ok = false; }
+          try { ok = await applyValue(field, plan.value, plan.rule); } catch { ok = false; }
 
           if (ok) {
             result.filled++;
@@ -1984,11 +1715,6 @@
             }
           }
           result.unmatched = state.unmatched.length;
-          // Everything we could not answer, so the accuracy report shows the
-          // gaps as well as the mistakes.
-          for (const field of state.unmatched) {
-            try { noteOutcome(field, { source: "unmatched", blank: true }); } catch {}
-          }
         }
       }
       } // end if (!authPage)
@@ -2004,14 +1730,6 @@
     result.profileLabel = state.profile?.label ?? null;
     result.matchScore = state.scoring?.score ?? null;
     state.lastRun = result;
-
-    // The review is the last thing a fill does, and the first thing the
-    // applicant sees. Built after the settle passes so it reports what is
-    // actually in the boxes rather than what was written into them.
-    try {
-      state.reviewRows = buildReviewRows(state.applied, state.unmatched);
-      if (state.reviewRows.length) review.open(state.reviewRows);
-    } catch {}
 
     watchUnmatched();
     queueAnswersFromForm();
@@ -2782,15 +2500,6 @@
         };
       }
       if (payload.application || responses.length) send({ type: "ZAPPLY_SYNC", payload });
-
-      // Outcomes ride along with the same report, so accuracy is measured on
-      // real applications rather than in a lab.
-      try {
-        const items = collectOutcomes();
-        if (items.length) send({ type: "ZAPPLY_FIELD_OUTCOMES", ats: meta?.ats, items });
-        outcomes.clear();
-      } catch {}
-
       state.captured.clear();
     };
 

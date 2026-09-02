@@ -455,7 +455,6 @@
     const haystacks = [label, ...String(label ?? "").split("|").map((s) => s.trim()).filter(Boolean)];
     let best = null;
     let bestScore = -1;
-    const candidates = [];
 
     for (const rule of rules) {
       const types = rule.type ?? ["text"];
@@ -503,62 +502,24 @@
        * descriptions still work — "Work Experience 2" plus "Location" — because
        * a joined-only match still counts, just for less.
        */
-      /**
-       * Where a rule matched matters as much as how specific it is.
-       *
-       * `haystacks[0]` is the joined label; `[1]` is the field's own primary
-       * description; the rest are its surroundings — the section heading and the
-       * labels of neighbouring fields.
-       *
-       * A rule that matched *only* the surroundings has not recognised this
-       * field at all. It has recognised the one next to it. On Workday's address
-       * block, where every field's derived label carries the whole block's text,
-       * that is how `county` and `addressLine2` — both weightier than `address`
-       * — took the Address Line 1 box in turn.
-       *
-       * Matches are therefore tiered:
-       *
-       *   2  the field's own description
-       *   1  the joined label, which is how rules that deliberately span two
-       *      descriptions work ("Location" plus "Work Experience 2")
-       *   0  a neighbour's label only
-       *
-       * If anything recognised the field itself or the joined label, tier 0 is
-       * discarded outright. Among what survives, weight decides as before.
-       */
       let hitIndex = -1;
-      let matchedOwn = false;
-      let matchedNeighbour = false;
-      let matchedJoined = false;
+      let placeBonus = 0;
       haystacks.forEach((hay, position) => {
         const i = rule.match.findIndex((re) => re.test(hay));
         if (i === -1) return;
-        if (position === 0) matchedJoined = true;
-        else if (position === 1) matchedOwn = true;
-        else matchedNeighbour = true;
+        // haystacks[0] is the joined text, [1] is the field's own primary
+        // description, and the rest are the surroundings — the section heading
+        // and the labels of neighbouring fields.
+        const bonus = position === 1 ? 40 : position > 1 ? 12 : 0;
+        if (bonus > placeBonus) placeBonus = bonus;
         if (hitIndex === -1 || i < hitIndex) hitIndex = i;
       });
       if (hitIndex === -1) continue;
 
-      /**
-       * The joined string contains every description, so a rule that matched a
-       * neighbour's label matched the joined one too. The neighbour match is
-       * therefore checked *before* falling back to the joined tier — otherwise
-       * every neighbour match would be promoted and the tiers would mean
-       * nothing, which is precisely the bug this replaced.
-       */
-      const tier = matchedOwn ? 2 : matchedNeighbour ? 0 : matchedJoined ? 1 : -1;
-
-      candidates.push({ rule, tier, score: (rule.weight ?? 5) * 10 - hitIndex });
-    }
-
-    if (!candidates.length) return null;
-    const recognised = candidates.some((c) => c.tier >= 1);
-    for (const candidate of candidates) {
-      if (recognised && candidate.tier === 0) continue;
-      if (candidate.score > bestScore) {
-        bestScore = candidate.score;
-        best = candidate.rule;
+      const score = (rule.weight ?? 5) * 10 - hitIndex + placeBonus;
+      if (score > bestScore) {
+        bestScore = score;
+        best = rule;
       }
     }
     return best;

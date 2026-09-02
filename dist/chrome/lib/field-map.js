@@ -658,16 +658,7 @@
       key: "addressLine2",
       weight: 11,
       match: [/\b(address\s*(line\s*)?2|apt|apartment|suite|unit)\b/i],
-      /**
-       * Must be the line-2 box itself.
-       *
-       * Workday renders the whole address block together, so "Address Line 2"
-       * appears in the derived label of Address Line 1 as well — and this rule
-       * outweighs `address`, so it took the line-1 box. Caught by the first
-       * fixture replay, which is exactly the kind of thing a photograph of a
-       * screen would not have shown.
-       */
-      deny: [THIRD_PARTY, (label) => !/\b(line\s*2|address\s*2|apt|apartment|suite|unit)\b/i.test(ownLabel(label))],
+      deny: [THIRD_PARTY],
       type: ["text"],
       // Résumé parsing sometimes copies the street into both lines. Repeating
       // it is never what the applicant meant, so line 2 gives way when it only
@@ -718,23 +709,13 @@
         /\bhome\s*address\b/i,
         /\bresidential\s*address\b/i,
       ],
-      /**
-       * Judged on its own label.
-       *
-       * These were tested against the whole derived label, and Workday renders
-       * the address block as one unit — so "Address Line 2", "City", "State",
-       * "Postal Code" and "County" all appear in Address Line 1's label and each
-       * of them disqualified the street rule in turn. The intent was only ever
-       * to keep this rule off *those* boxes, not off the box standing among
-       * them.
-       */
       deny: [
         THIRD_PARTY,
-        denyOwn(/e-?mail|city|state|zip|postal|country|apt|suite/i),
+        /e-?mail|city|state|zip|postal|country|apt|suite/i,
         // Any address line other than the first, however it is numbered.
-        denyOwn(/\b(address\s*)?line\s*([2-9]|\d{2,})\b/i),
-        denyOwn(/\baddress\s*([2-9]|\d{2,})\b/i),
-        denyOwn(/\b(tax|school|voting|sales)\s*district\b/i),
+        /\b(address\s*)?line\s*([2-9]|\d{2,})\b/i,
+        /\baddress\s*([2-9]|\d{2,})\b/i,
+        /\b(tax|school|voting|sales)\s*district\b/i,
       ],
       type: ["text"],
       // Only the street when the form has its own City/State/Zip boxes, which

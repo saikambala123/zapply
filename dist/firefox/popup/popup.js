@@ -370,62 +370,6 @@ $("view-pending").addEventListener("click", () => {
   $("view-pending").setAttribute("aria-expanded", String(open));
 });
 
-/**
- * Save the form on screen as a test fixture.
- *
- * Downloaded rather than uploaded: the value of a fixture is that it can be
- * dropped into `test/fixtures/` and replayed by the suite, and a file on disk is
- * the shortest path to that. Nothing about it is sensitive — the capture records
- * the questions a form asks and never the answers given to it — so it can be
- * attached to a bug report as it stands.
- */
-/** Reopen the pre-submit review for the page in the active tab. */
-$("review-btn").addEventListener("click", async () => {
-  const tab = await activeTab();
-  if (!tab?.id) return;
-  chrome.tabs.sendMessage(tab.id, { type: "ZAPPLY_REVIEW" }, () => {
-    void chrome.runtime.lastError;
-    window.close();
-  });
-});
-
-$("capture-btn").addEventListener("click", async () => {
-  const btn = $("capture-btn");
-  const original = btn.textContent;
-  btn.textContent = "Capturing…";
-  try {
-    const tab = await activeTab();
-    if (!tab?.id) throw new Error("No active tab.");
-
-    const res = await new Promise((resolve) => {
-      chrome.tabs.sendMessage(tab.id, { type: "ZAPPLY_CAPTURE_FORM" }, (r) => {
-        void chrome.runtime.lastError;
-        resolve(r);
-      });
-    });
-
-    const fixture = res?.fixture;
-    if (!fixture?.fields?.length) {
-      btn.textContent = "No form found";
-      setTimeout(() => { btn.textContent = original; }, 2200);
-      return;
-    }
-
-    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
-    const name = `${fixture.ats || "unknown"}-${stamp}.json`;
-    const url = URL.createObjectURL(
-      new Blob([JSON.stringify(fixture, null, 2)], { type: "application/json" })
-    );
-    await chrome.downloads.download({ url, filename: `zapply-fixtures/${name}`, saveAs: false });
-    setTimeout(() => URL.revokeObjectURL(url), 10000);
-
-    btn.textContent = `Saved ${fixture.fieldCount} fields`;
-  } catch (e) {
-    btn.textContent = "Capture failed";
-  }
-  setTimeout(() => { btn.textContent = original; }, 2600);
-});
-
 $("save-all-held").addEventListener("click", async () => {
   await heldCommand("ZAPPLY_PENDING_SAVE");
 });

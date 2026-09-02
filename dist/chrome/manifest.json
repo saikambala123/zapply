@@ -1,15 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Zapply \u2014 Job Application Autofill",
-  "version": "1.17.0",
+  "version": "1.13.0",
   "description": "Fill job applications in one click, reuse your saved answers, and track every application automatically.",
   "minimum_chrome_version": "102",
   "permissions": [
     "storage",
     "activeTab",
     "scripting",
-    "tabs",
-    "downloads"
+    "tabs"
   ],
   "host_permissions": [
     "http://*/*",
@@ -44,7 +43,6 @@
       "js": [
         "lib/field-map.js",
         "lib/matcher.js",
-        "lib/capture.js",
         "lib/ats.js",
         "content/autofill.js"
       ],

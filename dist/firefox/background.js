@@ -245,22 +245,6 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
        * saving moves an answer into `pendingResponses`, which is still only
        * sent on an explicit Sync.
        */
-      /**
-       * Fill outcomes. Fire-and-forget: measuring accuracy must never be able to
-       * interrupt an application, so a failure here is swallowed rather than
-       * surfaced. They are dropped, not queued, if the request fails — a lost
-       * sample costs nothing, a blocked applicant costs a job.
-       */
-      case "ZAPPLY_FIELD_OUTCOMES": {
-        try {
-          await api("/api/telemetry/fields", {
-            method: "POST",
-            body: JSON.stringify({ ats: msg.ats, items: (msg.items ?? []).slice(0, 300) }),
-          });
-        } catch {}
-        return respond({ ok: true });
-      }
-
       case "ZAPPLY_HOLD_ANSWERS": {
         const { heldAnswers, dismissedAnswers } = await store.get(["heldAnswers", "dismissedAnswers"]);
         /**
