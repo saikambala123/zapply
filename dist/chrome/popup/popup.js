@@ -195,7 +195,17 @@ async function heldCommand(type, question) {
     const tab = await activeTab();
     if (tab?.id) chrome.tabs.sendMessage(tab.id, { type, question }, () => void chrome.runtime.lastError);
   } catch {}
-  await refreshPending();
+  // refreshPending() always collapses the list before repopulating it — fine
+  // when it's called on its own, but here it closed the list on every single
+  // Save/discard, so reviewing several held answers meant reopening it after
+  // each one. Reopen it again when there is more left to review, matching the
+  // queued-answer remove button below.
+  const left = await refreshPending();
+  if (left) {
+    $("pending-list").hidden = false;
+    $("view-pending").textContent = "Hide";
+    $("view-pending").setAttribute("aria-expanded", "true");
+  }
 }
 
 async function refreshPending() {

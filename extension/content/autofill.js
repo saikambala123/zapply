@@ -1180,7 +1180,16 @@
         // Silently pushing a résumé into whatever file input a page exposes is
         // not something an autofill should decide on its own.
         if (kind !== "file") return { status: "skipped", key: rule.key };
-        if (settings?.autoAttachResume !== true) return { status: "unmatched", key: rule.key };
+        // "unmatched" here used to mean the same thing it means everywhere
+        // else: dashed-outline the field and count it in the on-page "N
+        // fields need your answer" pill. For a resume/cover-letter field with
+        // the toggle off that isn't a gap to flag — it's the applicant's
+        // standing choice not to have Zapply touch attachments — so with the
+        // toggle off this is now a silent "skipped" like any other field
+        // Zapply deliberately leaves alone. It only becomes "unmatched" (and
+        // worth surfacing) once the toggle is on and there is genuinely no
+        // document to attach.
+        if (settings?.autoAttachResume !== true) return { status: "skipped", key: rule.key };
         const wantKind = value === "__RESUME__" ? "resume" : "coverLetter";
         const docs = profile.documents ?? [];
         const doc = docs.find((d) => d.kind === wantKind && d.isDefault) || docs.find((d) => d.kind === wantKind);
