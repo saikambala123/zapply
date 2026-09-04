@@ -3,10 +3,7 @@
 const $ = (id) => document.getElementById(id);
 
 const send = (message) =>
-  new Promise((resolve) => chrome.runtime.sendMessage(message, (res) => {
-    const err = chrome.runtime.lastError;
-    resolve(err ? { ok: false, error: err.message || "Extension request failed." } : (res ?? { ok: false, error: "Extension request failed." }));
-  }));
+  new Promise((resolve) => chrome.runtime.sendMessage(message, (res) => resolve(res ?? { ok: false })));
 
 /**
  * [key, label, defaultsOn]
@@ -111,7 +108,6 @@ function renderMain() {
 
   // Stats
   refreshPending();
-  renderSavedAnswers();
   chrome.storage.local.get("stats", ({ stats }) => {
     $("stat-apps").textContent = stats?.applications ?? 0;
   });
@@ -179,62 +175,6 @@ try { chrome.storage.local.remove(["zapplyAccountPassword"]); } catch {}
  * they would join, where the decision can be made once and with the full list
  * in view.
  */
-function canonicalInputType(inputType) {
-  const t = String(inputType ?? "").trim().toLowerCase();
-  if (t === "textarea" || t === "long text" || t === "long-text") return "textarea";
-  if (["select", "dropdown", "combobox", "menu", "listbox"].includes(t)) return "select";
-  if (["radio", "choice", "choices", "radiogroup"].includes(t)) return "radio";
-  if (["checkbox", "checkboxes", "check", "checkgroup", "checkbox-group"].includes(t)) return "checkbox";
-  if (["date", "month", "number"].includes(t)) return t;
-  return "text";
-}
-
-function typeLabel(inputType) {
-  switch (canonicalInputType(inputType)) {
-    case "select": return "dropdown";
-    case "radio": return "radio";
-    case "checkbox": return "checkbox";
-    case "textarea": return "long text";
-    case "date": return "date";
-    case "month": return "month";
-    case "number": return "number";
-    default: return "plain text";
-  }
-}
-
-function isMachineQuestion(text) {
-  const t = String(text ?? "").trim().replace(/\s+/g, " ");
-  if (!t || t.length < 5 || t.length > 300) return true;
-  if (/^[a-f0-9]{16,}(?:[-_][a-z0-9]+)*$/i.test(t)) return true;
-  if (/^(?:[a-f0-9]{8,}\s+){2,}[a-f0-9]{4,}(?:\s|$)/i.test(t)) return true;
-  if (/\b(?:labeled|labelled)\s+(?:checkbox|radio|dropdown|select|input)\b/i.test(t) && /^[a-z0-9\s_-]+$/i.test(t)) return true;
-  if (/^(?:q|question|field|checkbox|radio|dropdown|select|input)(?:[_\- ]*(?:id|input|label|option|group))?\s*\d*$/i.test(t)) return true;
-  return false;
-}
-
-function displayText(value, max = 180) {
-  const t = String(value ?? "").trim();
-  return t.length > max ? `${t.slice(0, max)}…` : t;
-}
-
-function renderSavedAnswers() {
-  const list = $("saved-list");
-  const rows = (Array.isArray(session?.responses) ? session.responses : []).filter((entry) => {
-    const q = String(entry?.question ?? "").trim();
-    return q && !isMachineQuestion(q) && String(entry?.answer ?? "").trim();
-  });
-  list.innerHTML = "";
-  for (const entry of rows) {
-    const li = document.createElement("li"); li.className = "saved__item";
-    const q = document.createElement("span"); q.className = "saved__q"; q.textContent = displayText(entry.question, 220) || "Saved question";
-    const t = document.createElement("span"); t.className = "saved__type"; t.textContent = typeLabel(entry.inputType); q.appendChild(t);
-    const a = document.createElement("span"); a.className = "saved__a"; a.textContent = displayText(entry.answer) || "(empty)";
-    li.append(q, a); list.appendChild(li);
-  }
-  $("saved-note").textContent = rows.length ? `${rows.length} saved answer${rows.length === 1 ? "" : "s"}` : "No saved answers";
-  $("saved").hidden = rows.length === 0;
-}
-
 async function heldAnswers() {
   // Read from extension storage, not from the page. Asking the tab meant the
   // list was empty whenever the content script had not loaded there or had been
@@ -242,6 +182,34 @@ async function heldAnswers() {
   // the time, and is why edited answers never appeared here.
   const res = await send({ type: "ZAPPLY_GET_HELD" });
   return res?.data?.held ?? [];
+}
+
+function answerTypeLabel(inputType) {
+  switch (inputType) {
+    case "select": return "dropdown";
+    case "radio": return "radio";
+    case "checkbox": return "checkboxes";
+    case "textarea": return "long text";
+    default: return inputType || "text";
+  }
+}
+
+function renderPendingAnswer(answer, inputType) {
+  const wrap = document.createElement("span");
+  wrap.className = "pending__a-row";
+  const value = String(answer ?? "").trim();
+  const values = ["select", "radio", "checkbox"].includes(inputType)
+    ? value.split(/\s*(?:,|;|\|)\s*/).filter(Boolean)
+    : [value];
+  values.forEach((item) => {
+    const chip = document.createElement("span");
+    chip.className = ["select", "radio", "checkbox"].includes(inputType)
+      ? "pending__choice"
+      : "pending__plain";
+    chip.textContent = item;
+    wrap.appendChild(chip);
+  });
+  return wrap;
 }
 
 async function heldCommand(type, question) {
@@ -275,7 +243,10 @@ async function refreshPending() {
   const held = await heldAnswers();
   const pending = queued.length + held.length;
 
-  $("stat-answers").textContent = pending ? `${saved}+${pending}` : String(saved);
+  // This stat is the server-side Saved Answers count. Pending/unsaved items
+  // are shown separately below so the number never implies they were already
+  // persisted.
+  $("stat-answers").textContent = String(saved);
 
   const btn = $("clear-pending");
   btn.disabled = false;
@@ -377,17 +348,25 @@ function renderPendingList(queued, held = []) {
     const q = document.createElement("span");
     q.className = "pending__q";
     q.textContent = question;
-    if (!updates) {
-      const tag = document.createElement("span");
-      tag.className = "pending__new";
-      tag.textContent = " · new";
-      q.appendChild(tag);
-    }
+    const tag = document.createElement("span");
+    tag.className = updates ? "pending__new" : "pending__new";
+    tag.textContent = ` · ${updates ? "edited" : "new"} · ${answerTypeLabel(entry.inputType)}`;
+    q.appendChild(tag);
 
-    const a = document.createElement("span");
+    const a = document.createElement("div");
     a.className = "pending__a";
-    a.textContent = (updates ? "Replaces saved answer: " : "") + (answer.length > 110 ? `${answer.slice(0, 110)}…` : answer);
-    const type = document.createElement("span"); type.className = "pending__type"; type.textContent = typeLabel(entry.inputType); a.appendChild(type);
+    const prefix = document.createElement("span");
+    prefix.className = "pending__prefix";
+    prefix.textContent = updates ? "Replaces saved answer" : "Answer";
+    a.appendChild(prefix);
+    if (answer.length > 110 && !["select", "radio", "checkbox"].includes(entry.inputType)) {
+      const plain = document.createElement("span");
+      plain.className = "pending__plain";
+      plain.textContent = `${answer.slice(0, 110)}…`;
+      a.appendChild(plain);
+    } else {
+      a.appendChild(renderPendingAnswer(answer, entry.inputType));
+    }
 
     text.append(q, a);
 
@@ -432,13 +411,6 @@ function normalizeQuestion(q) {
     .trim()
     .slice(0, 180);
 }
-
-$("view-saved").addEventListener("click", () => {
-  const list = $("saved-list");
-  const open = list.hidden; list.hidden = !open;
-  $("view-saved").textContent = open ? "Hide saved" : "View saved";
-  $("view-saved").setAttribute("aria-expanded", String(open));
-});
 
 $("view-pending").addEventListener("click", () => {
   const list = $("pending-list");
@@ -680,13 +652,7 @@ $("sync-btn").addEventListener("click", async () => {
     setStatus(
       "ready",
       `${pulled} saved answer${pulled === 1 ? "" : "s"} ready`,
-      pushed ? `${pushed} answer${pushed === 1 ? "" : "s"} synced from this browser.` : "Pulled from your dashboard."
-    );
-  } else {
-    setStatus(
-      "warn",
-      "Sync failed",
-      saved.error || "Could not sync the edited answers. They are still kept in the extension queue; try again."
+      pushed ? `${pushed} new answer${pushed === 1 ? "" : "s"} uploaded from this browser.` : "Pulled from your dashboard."
     );
   }
 });

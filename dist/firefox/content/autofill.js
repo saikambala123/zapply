@@ -893,14 +893,7 @@
    * enough that saved answers routinely failed to apply.
    */
   function findSavedAnswer(field) {
-    // The extension should only reuse answers that were explicitly saved by the
-    // applicant. AI/imported records may exist in the dashboard, but they are
-    // not authoritative answers for an application question and must never be
-    // replayed into a dropdown or text field. Older cached records without a
-    // source are treated as legacy user answers until the next bootstrap refresh.
-    const responses = (state.session?.responses ?? []).filter((r) =>
-      (r?.source ?? "user") === "user" && readableQuestionText(r?.question || "") && !isMachineQuestionText(r?.question || "")
-    );
+    const responses = state.session?.responses ?? [];
     if (!responses.length) return null;
 
     const el = field?.el;
@@ -948,12 +941,6 @@
     }
     if (!best) return null;
 
-    // Matcher results are stored as `{ answer, confidence, ... }`. Return that
-    // record so planField can use the saved answer on the current blank field.
-    // A previous edit accidentally referenced an out-of-scope `saved` variable
-    // here, which made every successful match throw and silently prevented
-    // dropdown/radio/checkbox answers from replaying.
-
     // Saved answers that identify an application question exactly (including an
     // alias captured on another ATS) are always eligible to replay. This is
     // deliberately checked before profile-derived values in planField so an
@@ -962,13 +949,7 @@
     // Fuzzy matches stay available, but only at a stronger threshold than the
     // general matcher default. This prevents an unrelated saved response from
     // winning just because two short labels share a few words.
-    // Fuzzy question matches are intentionally stricter for choice controls.
-    // A near-match that sounds plausible can select the wrong option and is much
-    // worse than leaving the dropdown/radio blank for the applicant. Exact
-    // question/alias matches remain fully eligible.
-    const choiceField = field?.kind === "select" || field?.kind === "radio" || field?.kind === "checkbox";
-    const minimumConfidence = choiceField ? 0.90 : 0.82;
-    if ((best.confidence ?? 0) < minimumConfidence) return null;
+    if ((best.confidence ?? 0) < 0.82) return null;
 
     // An exact match means the applicant answered this very question before,
     // by its normalized text or one of its recorded aliases. That outranks a
@@ -1161,6 +1142,8 @@
       // applicant's. Without it, every field Zapply filled would be queued as
       // though they had answered it by hand.
       el.__zapplyWrittenValue = typeof value === "object" ? null : String(value);
+      el.__zapplyWasFilled = true;
+      el.__zapplyUserEdited = false;
     }
 
     // Each setter self-verifies; verifyField is an independent second opinion.
@@ -1896,17 +1879,11 @@
     // A genuinely different answer still supersedes the old one.
     const previous = pending.get(key);
     if (previous && previous.answer === entry.answer) return;
-    const normal = {
-      ...entry,
-      inputType: canonicalSavedInputType(entry.inputType),
-      options: Array.isArray(entry.options) ? entry.options.slice(0, 50).map((x) => String(x)).filter(Boolean) : [],
-      source: "user", userEdited: true,
-    };
-    pending.set(key, normal);
-    state.captured.set(key, normal);
+    pending.set(key, entry);
+    state.captured.set(key, entry);
     // Saved Responses are not written to the database here — the user controls
     // persistence with Sync. The background worker keeps a durable local queue.
-    send({ type: "ZAPPLY_QUEUE_RESPONSES", responses: [normal] });
+    send({ type: "ZAPPLY_QUEUE_RESPONSES", responses: [entry] });
   }
 
   async function flushAnswers() {
@@ -1993,149 +1970,65 @@
    * were being stored as the question. The real question is the nearest heading
    * in the group container that isn't itself an option.
    */
-  function isMachineQuestionText(text) {
-    const t = String(text ?? "").trim().replace(/\s+/g, " ");
-    if (!t) return true;
-
-    // Workday/React portals sometimes expose generated question ids in the
-    // accessible name, e.g. "cf776fe3 f42d 4f... labeled checkbox 7". These are
-    // implementation details, not questions a person can recognize on the next
-    // application, so never persist them.
-    if (/^[a-f0-9]{16,}(?:[-_][a-z0-9]+)*$/i.test(t)) return true;
-    if (/^(?:[a-f0-9]{8,}\s+){2,}[a-f0-9]{4,}(?:\s|$)/i.test(t)) return true;
-    if (/^[a-f0-9]{8,}(?:[-\s][a-f0-9]{4,}){2,}(?:[-\s][a-f0-9]{4,})?(?:\s|$)/i.test(t)) return true;
-    if (/\b(?:labeled|labelled)\s+(?:checkbox|radio|dropdown|select|input)\b/i.test(t) &&
-        /^[a-z0-9\s_-]+$/i.test(t)) return true;
-    if (/^(?:q|question|field|checkbox|radio|dropdown|select|input)(?:[_\- ]*(?:id|input|label|option|group))?\s*\d*$/i.test(t)) return true;
-    if (/^(?:field|question|input)[_\-]?\d{3,}$/i.test(t)) return true;
-    return false;
-  }
-
-  function readableQuestionText(text) {
-    const t = String(text ?? "").trim().replace(/\s+/g, " ");
-    if (!t || t.length < 5 || t.length > 300 || isMachineQuestionText(t)) return "";
-    if (/^(select|choose|please select|--|yes|no|true|false)$/i.test(t)) return "";
-    // A real question is usually a sentence or a heading-sized phrase. Avoid
-    // accidentally promoting an option, country, job title, or UI status label.
-    if (t.split(/\s+/).length <= 2 && !/[?]$/.test(t)) return "";
-    return t;
-  }
-
-  function questionLike(text) {
-    const t = String(text ?? "").trim();
-    if (!t) return false;
-    if (/\?$/.test(t)) return true;
-    if (/\b(?:how|what|which|when|where|why|who|are|is|do|does|did|have|has|can|could|would|will|were|was|please|select|describe|tell|indicate|choose)\b/i.test(t)) return true;
-    return t.split(/\s+/).length >= 6;
-  }
-
   function questionHeadingNear(el) {
-    if (!el) return "";
-
-    // First use explicit accessibility references. This is the most reliable
-    // source on Workday because the visible radio/checkbox labels are often
-    // option text while the question itself is referenced by aria-labelledby.
-    try {
-      const ids = el.getAttribute?.("aria-labelledby");
-      if (ids) {
-        for (const id of ids.split(/\s+/)) {
-          const node = document.getElementById(id);
-          const text = readableQuestionText(node && (M.visibleText?.(node) || node.textContent));
-          if (text && questionLike(text)) return text;
-        }
-      }
-    } catch {}
-
     let node = el.parentElement;
-    const seen = new Set();
-    let best = "";
-
-    for (let depth = 0; node && depth < 12; depth++, node = node.parentElement) {
+    for (let depth = 0; node && depth < 6; depth++, node = node.parentElement) {
       if (node === document.body || node === document.documentElement) break;
-
-      // Prefer the small group heading immediately before this field. Looking
-      // through the whole ancestor with querySelectorAll() used to find the
-      // first unrelated label in DOM order (often "United States" or a generated
-      // id) and persist that as the question.
-      let cursor = el;
-      for (let i = 0; i < 6 && cursor && cursor !== node; i++) {
-        let sibling = cursor.previousElementSibling;
-        for (let j = 0; sibling && j < 8; j++, sibling = sibling.previousElementSibling) {
-          const text = readableQuestionText(sibling.textContent);
-          if (text && questionLike(text)) return text;
-          try {
-            const descendants = sibling.querySelectorAll?.(
-              'legend, h1, h2, h3, h4, h5, h6, [role="heading"], [class*="question"], [class*="Question"], [data-automation-id*="question"], [data-automation-id*="Question"], p'
-            ) || [];
-            for (let k = descendants.length - 1; k >= 0; k--) {
-              const candidate = descendants[k];
-              if (!candidate || candidate.contains(el)) continue;
-              const dtext = readableQuestionText(candidate.textContent);
-              if (dtext && questionLike(dtext)) return dtext;
-            }
-          } catch {}
-        }
-        cursor = cursor.parentElement;
-      }
-
-      // Then inspect explicit headings in the current group. Keep the closest
-      // useful candidate rather than the first arbitrary span/div.
+      let candidates;
       try {
-        const candidates = Array.from(node.querySelectorAll(
-          'legend, h1, h2, h3, h4, h5, h6, [role="heading"], [class*="question"], [class*="Question"], [data-automation-id*="question"], [data-automation-id*="Question"], p'
-        ));
-        for (const cand of candidates) {
-          if (!cand || seen.has(cand) || cand.contains(el)) continue;
-          seen.add(cand);
-          const text = readableQuestionText(cand.textContent);
-          if (text && questionLike(text)) best = text;
-        }
-      } catch {}
-      if (best) return best;
+        candidates = node.querySelectorAll(
+          'legend, p, h2, h3, h4, h5, [class*="question"], [class*="Question"], label, span, div'
+        );
+      } catch { break; }
+      for (const cand of candidates) {
+        if (cand.contains(el)) continue;
+        // A node wrapping a control is an option label, not the question.
+        if (cand.querySelector("input, select, textarea, button, [role='radio'], [role='checkbox']")) continue;
+        const text = (cand.textContent || "").trim().replace(/\s+/g, " ");
+        if (text.length >= 8 && text.length <= 300) return text;
+      }
     }
     return "";
   }
 
   /**
-   * The question as a person would read it. Machine ids are never persisted.
+   * The question as a person would read it.
    *
-   * For plain fields the derived accessible label is usually the cleanest
-   * question, so do not let a distant heading replace it. For radio/checkbox
-   * groups, prefer the explicit question heading because the control's own label
-   * is normally just "Yes", "No", or another option.
+   * `field.label` is several descriptions joined with " | ", ending with the
+   * humanized name attribute. The first description is normally the visible
+   * label — except on choice groups, where it is the option the person picked.
    */
   function primaryQuestion(field) {
-    const parts = String(field?.label ?? "")
-      .split("|")
-      .map((x) => readableQuestionText(x))
-      .filter(Boolean);
+    const parts = String(field?.label ?? "").split("|").map((x) => x.trim()).filter(Boolean);
     const isChoice = field?.kind === "radio" || field?.kind === "checkbox";
 
+    const looksMachineGenerated = (text) => {
+      const s = String(text ?? "").trim();
+      if (!s) return true;
+      if (/^(?:data[-_]|test[-_]|qa[-_]|automation[-_]|field[-_]|question[-_]|input[-_])/i.test(s)) return true;
+      if (/\b(?:gh|greenhouse|lever|ashby)\b.*\b(?:quest|question|checkbox|radio)\b/i.test(s) && /[0-9a-f]{8,}/i.test(s)) return true;
+      if (/[0-9a-f]{8}(?:[- ]+[0-9a-f]{4}){1,3}[- ]*[0-9a-f]{0,12}/i.test(s) && /\b(?:quest|question|checkbox|radio|field)\b/i.test(s)) return true;
+      return false;
+    };
+
     if (isChoice) {
-      const heading = questionHeadingNear(field?.el);
-      if (heading) return heading;
+      // Choice controls often expose an option label as their first derived
+      // description. Prefer the human-visible question heading before any
+      // machine id (Workday/Greenhouse test ids were being stored as the
+      // question, making Pending/Saved Answers unreadable).
+      const heading = questionHeadingNear(field.el);
+      if (heading && !looksMachineGenerated(heading)) return heading;
 
       let options = [];
-      try { options = (M.optionTextsFor(field.el) || []).map((o) => o.toLowerCase().trim()); } catch {}
-      const notAnOption = parts.find((pp) =>
-        !options.includes(pp.toLowerCase()) &&
-        questionLike(pp)
+      try { options = (M.optionTextsFor(field.el) || []).map((o) => o.toLowerCase()); } catch {}
+      const notAnOption = parts.find(
+        (p) => !options.includes(p.toLowerCase()) && (p.length > 12 || /\?$/.test(p)) && !looksMachineGenerated(p)
       );
       if (notAnOption) return notAnOption;
     }
 
-    // Prefer the first readable, human-facing description produced by the
-    // matcher. This keeps a plain text answer under "Why are you interested…?"
-    // instead of an unrelated "Work Experience" container heading.
-    const clean = parts.find((pp) => !isMachineQuestionText(pp));
-    if (clean) return clean;
-
-    return questionHeadingNear(field?.el) || "";
-  }
-
-  function canonicalSavedInputType(fieldOrKind) {
-    const raw = typeof fieldOrKind === "string" ? fieldOrKind : fieldOrKind?.kind;
-    try { return M.canonicalInputType?.(raw) || String(raw || "text"); } catch { return String(raw || "text"); }
+    const visible = parts.find((p) => !looksMachineGenerated(p));
+    return visible || parts[0] || "";
   }
 
   /** Every control that answers the same question as this one. */
@@ -2348,6 +2241,14 @@
     const el = field.el;
     if (!document.contains(el)) return false;
 
+    // The background sync queue is a review queue for answers the applicant
+    // supplied, not a dump of everything Zapply filled. A sweep is only allowed
+    // to capture a field after a trusted user interaction marked it edited.
+    // This is especially important after dropdown/radio/checkbox fills, whose
+    // own trailing change/click events can fire after the programmatic flag has
+    // expired and previously caused the whole filled form to appear as pending.
+    if (!userDriven && !el.__zapplyUserEdited) return false;
+
     const answer = String(readValue(field) ?? "").trim();
     if (!answer) return false;
     if (/^(select|choose|please select|--)/i.test(answer)) return false;
@@ -2368,20 +2269,19 @@
     const question = primaryQuestion(field);
     if (question.length < 5 || question.length > 300) return false;
 
-    if (!worthSaving(field, answer)) return false;
     el.__zapplyLastCaptured = answer;
+    if (!worthSaving(field, answer)) return false;
     holdAnswer(field, {
       question,
       answer,
-      inputType: canonicalSavedInputType(field),
+      inputType: field.kind,
       options:
-        ["select", "radio", "checkbox"].includes(canonicalSavedInputType(field))
-          ? (M.optionTextsFor(field.el) || []).slice(0, 50)
+        field.el.tagName === "SELECT" || field.kind === "radio" || field.kind === "checkbox"
+          ? M.optionTextsFor(field.el)
           : [],
       ats: state.adapter?.key,
       domain: location.hostname,
       source: "user",
-      userEdited: true,
     });
     el.classList.remove("zapply-needs-you");
     return true;
@@ -2607,11 +2507,14 @@
   }
 
   /**
-   * Check for answers that the applicant actually edited.
+   * Offer every answer now in the form for saving.
    *
-   * Autofill values, profile values and AI drafts must never be promoted into
-   * Saved Answers just because they are present in the DOM after a Fill run.
-   * The only values eligible here are fields marked by a trusted user event.
+   * Capture used to record only what the applicant typed, on the reasoning that
+   * Zapply already knew everything else. But the queue is the review step before
+   * anything reaches the dashboard, and an answer is worth keeping whoever
+   * produced it — the profile, a saved answer, the model, or the applicant. A
+   * dropdown and a radio group are answers too, which is why this walks the
+   * fields rather than listening for typing.
    *
    * Identity and contact details are still left out: a name or a phone number is
    * profile data, not an answer to a question, and banking it would mean the
@@ -2628,13 +2531,8 @@
         const answer = String(readValue(field) ?? "").trim();
         if (!answer) continue;
 
-        // This pass runs immediately after autofill. It must never turn an
-        // AI/profile/saved-answer value into a new Saved Answer. Only a field
-        // that the applicant actually edited is eligible for this review list.
-        // The trusted input/change listeners set this flag when they take over
-        // a field, including native and custom dropdowns/radios.
-        if (!field.el.__zapplyUserEdited) continue;
-
+        // Already saved with exactly this answer — re-queueing it would just be
+        // noise in a list meant for reviewing what changed.
         const saved = findSavedAnswer(field);
         if (saved?.exact && String(saved.answer).trim() === answer) continue;
 

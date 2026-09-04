@@ -418,25 +418,6 @@
   /* ------------------------------------------------------------------ */
 
   /** The normalized "kind" of a control, used to filter which rules may apply. */
-  /**
-   * Canonical saved-answer control types. Old releases wrote native input
-   * types such as email/tel/url/number directly to Saved Answers, and some
-   * pages used aliases such as dropdown/combobox/choice. Keeping one canonical
-   * vocabulary prevents the popup from ever showing "unsupported" for a type
-   * that the autofill engine can actually handle.
-   */
-  function canonicalInputType(raw) {
-    const t = String(raw ?? "").trim().toLowerCase();
-    if (!t) return "text";
-    if (t === "textarea" || t === "long text" || t === "long-text") return "textarea";
-    if (["select", "dropdown", "combobox", "menu", "listbox"].includes(t)) return "select";
-    if (["radio", "choice", "choices", "radiogroup"].includes(t)) return "radio";
-    if (["checkbox", "checkboxes", "check", "checkgroup", "checkbox-group"].includes(t)) return "checkbox";
-    if (["date", "month", "number"].includes(t)) return t;
-    // email/tel/url/password/text and unknown legacy values are plain fields.
-    return "text";
-  }
-
   function fieldKind(el) {
     const tag = el.tagName.toLowerCase();
     if (tag === "textarea") return "textarea";
@@ -2839,7 +2820,6 @@
     isParentOption,
     humanize,
     fieldKind,
-    canonicalInputType,
     matchRule,
     setTextValue,
     setSelectValue,

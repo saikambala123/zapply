@@ -76,7 +76,7 @@ async function boot({ storage = {}, savedAnswers = [] } = {}) {
 
   const context = vm.createContext({
     chrome, fetch: fetchStub, console,
-    setTimeout, clearTimeout, setInterval, clearInterval, Date, URL, JSON, Math, Promise,
+    setTimeout, clearTimeout, setInterval, clearInterval, Date, URL, JSON, Math, Promise, AbortController,
   });
   vm.runInContext(await readFile(join(ROOT, "extension/background.js"), "utf8"), context);
 
@@ -236,6 +236,47 @@ const ANSWERS = [
   check("the choices travel with the answer", (byQ("hear about")?.options ?? []).length === 3, JSON.stringify(byQ("hear about")?.options));
   check("the report counts them", res?.data?.responsesSaved === 4, JSON.stringify(res?.data));
   check("the queue is emptied once they are up", storage.pendingResponses === undefined, JSON.stringify(storage.pendingResponses));
+}
+
+
+/* --- Sync also persists still-unsaved edits in one click --- */
+{
+  const { send, calls, storage } = await boot({
+    storage: {
+      token: "t", apiBase: "https://zapply.test",
+      heldAnswers: [
+        { question: "Which shifts are you available for?", answer: "Evenings", inputType: "checkbox", options: ["Mornings", "Evenings"] },
+      ],
+    },
+    savedAnswers: ANSWERS,
+  });
+
+  const res = await send({ type: "ZAPPLY_SYNC_PENDING" });
+  const push = calls.find((c) => c.url.includes("/api/extension/sync") && c.method === "POST");
+  const sent = push ? JSON.parse(push.body).responses : [];
+
+  check("Sync uploads answers that are still marked unsaved", sent.length === 1, JSON.stringify(sent));
+  check("the unsaved answer keeps its field type", sent[0]?.inputType === "checkbox", JSON.stringify(sent[0]));
+  check("the held list is cleared only after successful sync", storage.heldAnswers === undefined, JSON.stringify(storage.heldAnswers));
+  check("the sync result counts the persisted edit", res?.data?.responsesSaved === 1, JSON.stringify(res?.data));
+}
+
+/* --- Sync does not re-upload an unchanged saved answer --- */
+{
+  const existing = { _id: "r3", question: "Which shifts are you available for?", normalizedKey: "shifts available", answer: "Evenings", inputType: "checkbox", options: ["Mornings", "Evenings"] };
+  const { send, calls, storage } = await boot({
+    storage: {
+      token: "t", apiBase: "https://zapply.test",
+      pendingResponses: [existing],
+      session: { responses: [existing], profile: { _id: "p1" } },
+    },
+    savedAnswers: [existing],
+  });
+
+  const res = await send({ type: "ZAPPLY_SYNC_PENDING" });
+  check("unchanged saved answers are not uploaded again", !calls.some((c) => c.url.includes("/api/extension/sync") && c.method === "POST"), calls.map((c) => c.url).join(", "));
+  check("unchanged local entries are cleared after sync", storage.pendingResponses === undefined, JSON.stringify(storage.pendingResponses));
+  check("unchanged sync reports zero saved", res?.data?.responsesSaved === 0, JSON.stringify(res?.data));
 }
 
 /* --- a fresh session must not be served from an empty cache --- */
