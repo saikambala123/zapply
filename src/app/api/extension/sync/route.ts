@@ -172,9 +172,15 @@ export const POST = handler(async (req: NextRequest) => {
               userId: user._id,
               normalizedKey: r.normalizedKey,
               source: "user",
-              useCount: 0,
             },
             $addToSet: { aliases: r.question },
+            // useCount lives only here now. MongoDB rejects an update that
+            // touches the same field in both $setOnInsert and $inc — every
+            // upsert in this batch threw "conflicting update operators",
+            // which failed the whole bulkWrite and is why Sync reported
+            // failure on every attempt, and why nothing ever reached Saved
+            // Answers to be reused on the next application. $inc alone
+            // still seeds the field correctly: 1 on insert, +1 on update.
             $inc: { useCount: 1 },
           },
           upsert: true,
