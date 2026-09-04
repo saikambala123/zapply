@@ -179,6 +179,27 @@ function setBadge(text, color = "#5B2AD6") {
  * will *replace* a saved one is queued once here and lands on that same record
  * when it syncs, rather than arriving as a second, competing entry.
  */
+function canonicalInputType(raw) {
+  const t = String(raw ?? "").trim().toLowerCase();
+  if (t === "textarea" || t === "long text" || t === "long-text") return "textarea";
+  if (["select", "dropdown", "combobox", "menu", "listbox"].includes(t)) return "select";
+  if (["radio", "choice", "choices", "radiogroup"].includes(t)) return "radio";
+  if (["checkbox", "checkboxes", "check", "checkgroup", "checkbox-group"].includes(t)) return "checkbox";
+  if (["date", "month", "number"].includes(t)) return t;
+  return "text";
+}
+
+function isHumanQuestion(q) {
+  const t = String(q ?? "").trim().replace(/\s+/g, " ");
+  if (!t || t.length < 5 || t.length > 300) return false;
+  if (/^[a-f0-9]{16,}(?:[-_][a-z0-9]+)*$/i.test(t)) return false;
+  if (/^(?:[a-f0-9]{8,}\s+){2,}[a-f0-9]{4,}(?:\s|$)/i.test(t)) return false;
+  if (/\b(?:labeled|labelled)\s+(?:checkbox|radio|dropdown|select|input)\b/i.test(t) && /^[a-z0-9\s_-]+$/i.test(t)) return false;
+  if (/^(?:q|question|field|checkbox|radio|dropdown|select|input)(?:[_\- ]*(?:id|input|label|option|group))?\s*\d*$/i.test(t)) return false;
+  if (/^(?:select|choose|please select|--|yes|no|true|false)$/i.test(t)) return false;
+  return true;
+}
+
 function queueKey(question) {
   return String(question ?? "")
     .toLowerCase()
@@ -278,7 +299,14 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
           if (r.userEdited !== true || (r.source && r.source !== "user")) continue;
           const key = queueKey(r.question);
           if (!key || dismissed.has(key)) continue;
-          merged.set(key, { ...r, source: "user", userEdited: true, heldAt: Date.now() });
+          merged.set(key, {
+            ...r,
+            inputType: canonicalInputType(r.inputType),
+            options: Array.isArray(r.options) ? r.options.slice(0, 50).map((x) => String(x)).filter(Boolean) : [],
+            source: "user",
+            userEdited: true,
+            heldAt: Date.now(),
+          });
         }
         const held = Array.from(merged.values()).slice(-200);
         await store.set({ heldAnswers: held });
@@ -303,7 +331,14 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
         const keeping = held.filter((r) => wanted && !wanted.has(queueKey(r.question)));
 
         const merged = new Map((pendingResponses ?? []).map((r) => [queueKey(r.question), r]));
-        for (const r of moving) merged.set(queueKey(r.question), { ...r, queuedAt: Date.now() });
+        for (const r of moving) merged.set(queueKey(r.question), {
+          ...r,
+          inputType: canonicalInputType(r.inputType),
+          options: Array.isArray(r.options) ? r.options.slice(0, 50).map((x) => String(x)).filter(Boolean) : [],
+          source: "user",
+          userEdited: true,
+          queuedAt: Date.now(),
+        });
 
         const { dismissedAnswers: previouslyDismissed } = await store.get("dismissedAnswers");
         const stillDismissed = new Set(previouslyDismissed ?? []);
@@ -345,6 +380,7 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
         const merged = new Map((pendingResponses ?? []).map((r) => [queueKey(r.question), r]));
         for (const r of (msg.responses ?? [])) {
           if (!r?.question || !String(r.answer ?? "").trim()) continue;
+          if (!isHumanQuestion(r.question)) continue;
           // Only answers proven to be user edits should ever enter this queue.
           // Keep an explicit source marker so older/newer UI code can distinguish
           // corrections from generated values and future changes cannot silently
@@ -353,7 +389,7 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
           if (r.userEdited !== true) continue;
           const key = queueKey(r.question);
           if (!key) continue;
-          merged.set(key, { ...r, source: "user", userEdited: true, queuedAt: Date.now() });
+          merged.set(key, { ...r, inputType: canonicalInputType(r.inputType), options: Array.isArray(r.options) ? r.options.slice(0, 50).map((x) => String(x)).filter(Boolean) : [], source: "user", userEdited: true, queuedAt: Date.now() });
         }
         await store.set({ pendingResponses: Array.from(merged.values()).slice(-500) });
         await refreshBadge();
@@ -429,16 +465,47 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
        * nothing. The refresh now always runs.
        */
       case "ZAPPLY_SYNC_PENDING": {
-        const { pendingResponses } = await store.get("pendingResponses");
-        const responses = (pendingResponses ?? []).filter((r) => r?.userEdited === true && (r.source ?? "user") === "user");
+        const { pendingResponses, heldAnswers } = await store.get(["pendingResponses", "heldAnswers"]);
+
+        // Sync means sync every answer the applicant explicitly edited. Held
+        // answers are the same trusted user edits as the queue, just waiting for
+        // the Sync button instead of a per-row Save click. Move them into the
+        // upload set here so Sync is one reliable action even when the form
+        // navigated between steps.
+        const candidates = [
+          ...(pendingResponses ?? []),
+          ...(heldAnswers ?? []),
+        ];
+        const merged = new Map();
+        for (const r of candidates) {
+          if (!r?.question || !String(r.answer ?? "").trim()) continue;
+          if (r.source && r.source !== "user") continue;
+          if (r.userEdited !== true) continue;
+          if (!isHumanQuestion(r.question)) continue;
+          const key = queueKey(r.question);
+          if (!key) continue;
+          merged.set(key, {
+            ...r,
+            question: String(r.question).trim(),
+            answer: String(r.answer).trim(),
+            inputType: canonicalInputType(r.inputType),
+            options: Array.isArray(r.options) ? r.options.slice(0, 50).map((x) => String(x)).filter(Boolean) : [],
+            source: "user",
+            userEdited: true,
+          });
+        }
+        const responses = Array.from(merged.values()).slice(-200);
 
         let pushed = { ok: true, data: { responsesSaved: 0 } };
         if (responses.length) {
-          pushed = await api("/api/extension/sync", {
-            method: "POST",
-            body: JSON.stringify({ responses }),
-          });
-          if (pushed.ok) await store.remove(["pendingResponses"]);
+          pushed = await api("/api/extension/sync", { method: "POST", body: JSON.stringify({ responses }) });
+          if (!pushed.ok) {
+            // A brief retry handles transient Vercel cold-start/network failures
+            // without making the user press Sync repeatedly.
+            await new Promise((resolve) => setTimeout(resolve, 350));
+            pushed = await api("/api/extension/sync", { method: "POST", body: JSON.stringify({ responses }) });
+          }
+          if (pushed.ok) await store.remove(["pendingResponses", "heldAnswers"]);
         }
 
         const session = await getSession({ force: true });
@@ -448,7 +515,7 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
         else setBadge("!", "#E5484D");
 
         if (!pushed.ok) return respond(pushed);
-        if (!session) return respond({ ok: false, error: "Couldn't reach Zapply to load your saved answers." });
+        if (!session) return respond({ ok: false, error: "Couldn't reach Zapply to load your saved answers after syncing." });
 
         return respond({
           ok: true,

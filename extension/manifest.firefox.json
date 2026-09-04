@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Zapply \u2014 Job Application Autofill",
-  "version": "1.13.0",
+  "version": "1.13.1",
   "description": "Fill job applications in one click, reuse your saved answers, and track every application automatically.",
   "permissions": [
     "storage",
