@@ -123,44 +123,66 @@ export const POST = handler(async (req: NextRequest) => {
 
   let savedCount = 0;
   if (Array.isArray(body.responses) && body.responses.length) {
-    for (const r of body.responses) {
-      const question = String(r?.question || "").trim();
-      const answer = String(r?.answer ?? "").trim();
-      const normalizedKey = normalizeQuestion(question);
-      if (!question || !answer || !normalizedKey) continue;
-
-      const doc = await SavedResponse.findOne({ userId: user._id, normalizedKey });
-      if (doc) {
-        const aliases = new Set([...(doc.aliases || []), question]);
-        doc.question = question;
-        doc.answer = answer;
-        doc.inputType = r.inputType || doc.inputType || "text";
-        doc.options = Array.isArray(r.options) ? r.options.slice(0, 50) : doc.options;
-        doc.ats = r.ats || doc.ats;
-        doc.lastDomain = r.domain || doc.lastDomain;
-        doc.lastUsedAt = new Date();
-        doc.category = categorizeQuestion(question);
-        doc.aliases = Array.from(aliases).slice(-30);
-        doc.useCount = (doc.useCount || 0) + 1;
-        await doc.save();
-      } else {
-        await SavedResponse.create({
-          userId: user._id,
-          question,
-          normalizedKey,
-          aliases: [question],
-          answer,
+    // Validate/filter once, then persist in one MongoDB bulk operation. The
+    // previous implementation performed a find + save/create for every answer,
+    // turning a large application into hundreds of sequential round trips and
+    // making sync noticeably slow on serverless cold starts.
+    const clean = body.responses
+      .map((r) => {
+        const question = String(r?.question || "").trim();
+        const answer = String(r?.answer ?? "").trim();
+        const normalizedKey = normalizeQuestion(question);
+        if (!question || !answer || !normalizedKey) return null;
+        return {
+          question, answer, normalizedKey,
           inputType: r.inputType || "text",
           options: Array.isArray(r.options) ? r.options.slice(0, 50) : [],
           ats: r.ats,
           lastDomain: r.domain,
-          lastUsedAt: new Date(),
           category: categorizeQuestion(question),
-          useCount: 1,
-          source: "user",
-        });
-      }
-      savedCount++;
+        };
+      })
+      .filter(Boolean) as Array<{
+        question: string; answer: string; normalizedKey: string; inputType: string;
+        options: string[]; ats?: string; lastDomain?: string; category: string;
+      }>;
+
+    if (clean.length) {
+      // A single form can report the same question more than once (for example
+      // a change event followed by the final submit sweep). Keep the latest
+      // answer per key before building upserts so two operations in the same
+      // bulk request can never race on the unique index.
+      const latestByKey = new Map(clean.map((r) => [r.normalizedKey, r]));
+      const deduped = Array.from(latestByKey.values());
+      const ops = deduped.map((r) => ({
+        updateOne: {
+          filter: { userId: user._id, normalizedKey: r.normalizedKey },
+          update: {
+            $set: {
+              question: r.question,
+              answer: r.answer,
+              inputType: r.inputType,
+              options: r.options,
+              ...(r.ats ? { ats: r.ats } : {}),
+              ...(r.lastDomain ? { lastDomain: r.lastDomain } : {}),
+              lastUsedAt: new Date(),
+              category: r.category,
+            },
+            $setOnInsert: {
+              userId: user._id,
+              normalizedKey: r.normalizedKey,
+              source: "user",
+              useCount: 0,
+            },
+            $addToSet: { aliases: r.question },
+            $inc: { useCount: 1 },
+          },
+          upsert: true,
+        },
+      }));
+
+      const result = await SavedResponse.bulkWrite(ops, { ordered: false });
+      savedCount = deduped.length;
     }
   }
 
