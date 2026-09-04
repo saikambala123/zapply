@@ -26,26 +26,14 @@ type Row = {
  * no way to see which option had been picked out of which list. The record
  * already carries `inputType` and `options`; this just uses them.
  */
-function canonicalInputType(inputType?: string) {
-  const t = String(inputType ?? "").trim().toLowerCase();
-  if (t === "textarea" || t === "long text" || t === "long-text") return "textarea";
-  if (["select", "dropdown", "combobox", "menu", "listbox"].includes(t)) return "select";
-  if (["radio", "choice", "choices", "radiogroup"].includes(t)) return "radio";
-  if (["checkbox", "checkboxes", "check", "checkgroup", "checkbox-group"].includes(t)) return "checkbox";
-  if (["date", "month", "number"].includes(t)) return t;
-  return "text";
-}
-
 function typeLabel(inputType?: string) {
-  switch (canonicalInputType(inputType)) {
+  switch (inputType) {
     case "select": return "dropdown";
-    case "radio": return "radio";
-    case "checkbox": return "checkbox";
+    case "radio": return "choice";
+    case "checkbox": return "checkboxes";
     case "textarea": return "long text";
     case "date": return "date";
-    case "month": return "month";
-    case "number": return "number";
-    default: return "plain text";
+    default: return "text";
   }
 }
 
@@ -53,8 +41,7 @@ const CHOICE_TYPES = new Set(["select", "radio", "checkbox"]);
 
 /** The picked option(s), rendered as choices instead of a sentence. */
 function AnswerBody({ answer, inputType, options }: { answer: string; inputType?: string; options?: string[] }) {
-  const type = canonicalInputType(inputType);
-  if (!CHOICE_TYPES.has(type)) return <>{answer}</>;
+  if (!CHOICE_TYPES.has(inputType ?? "")) return <>{answer}</>;
 
   const picked = String(answer ?? "")
     .split(/\s*(?:,|;|\|)\s*/)
