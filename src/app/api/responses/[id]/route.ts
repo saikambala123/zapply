@@ -10,10 +10,20 @@ type Ctx = { params: { id: string } };
  * Writable fields only. `$set: body` accepted anything the caller sent — most
  * importantly `userId`, which reassigned the answer to another account.
  */
+function canonicalInputType(raw: unknown) {
+  const t = String(raw ?? "").trim().toLowerCase();
+  if (t === "textarea" || t === "long text" || t === "long-text") return "textarea";
+  if (["select", "dropdown", "combobox", "menu", "listbox"].includes(t)) return "select";
+  if (["radio", "choice", "choices", "radiogroup"].includes(t)) return "radio";
+  if (["checkbox", "checkboxes", "check", "checkgroup", "checkbox-group"].includes(t)) return "checkbox";
+  if (["date", "month", "number"].includes(t)) return t;
+  return "text";
+}
+
 const EDITABLE: Record<string, (v: unknown) => unknown> = {
   question: (v) => String(v ?? "").slice(0, 2000),
   answer: (v) => String(v ?? "").slice(0, 20_000),
-  inputType: (v) => String(v ?? "text").slice(0, 40),
+  inputType: (v) => canonicalInputType(v),
   category: (v) => String(v ?? "general").slice(0, 80),
   ats: (v) => String(v ?? "").slice(0, 60),
   lastDomain: (v) => String(v ?? "").slice(0, 253),

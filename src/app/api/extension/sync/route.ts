@@ -9,6 +9,27 @@ import { z } from "zod";
 export const dynamic = "force-dynamic";
 export const OPTIONS = () => cors();
 
+function canonicalInputType(raw: unknown) {
+  const t = String(raw ?? "").trim().toLowerCase();
+  if (t === "textarea" || t === "long text" || t === "long-text") return "textarea";
+  if (["select", "dropdown", "combobox", "menu", "listbox"].includes(t)) return "select";
+  if (["radio", "choice", "choices", "radiogroup"].includes(t)) return "radio";
+  if (["checkbox", "checkboxes", "check", "checkgroup", "checkbox-group"].includes(t)) return "checkbox";
+  if (["date", "month", "number"].includes(t)) return t;
+  return "text";
+}
+
+function isHumanQuestion(q: string) {
+  const t = String(q ?? "").trim().replace(/\s+/g, " ");
+  if (!t || t.length < 5 || t.length > 300) return false;
+  if (/^[a-f0-9]{16,}(?:[-_][a-z0-9]+)*$/i.test(t)) return false;
+  if (/^(?:[a-f0-9]{8,}\s+){2,}[a-f0-9]{4,}(?:\s|$)/i.test(t)) return false;
+  if (/\b(?:labeled|labelled)\s+(?:checkbox|radio|dropdown|select|input)\b/i.test(t) && /^[a-z0-9\s_-]+$/i.test(t)) return false;
+  if (/^(?:q|question|field|checkbox|radio|dropdown|select|input)(?:[_\- ]*(?:id|input|label|option|group))?\s*\d*$/i.test(t)) return false;
+  if (/^(?:select|choose|please select|--|yes|no|true|false)$/i.test(t)) return false;
+  return true;
+}
+
 function categorizeQuestion(q: string) {
   const s = q.toLowerCase();
   if (/sponsor|visa|authorized|work permit|immigration/.test(s)) return "work-authorization";
@@ -132,11 +153,11 @@ export const POST = handler(async (req: NextRequest) => {
         const question = String(r?.question || "").trim();
         const answer = String(r?.answer ?? "").trim();
         const normalizedKey = normalizeQuestion(question);
-        if (!question || !answer || !normalizedKey) return null;
+        if (!question || !answer || !normalizedKey || !isHumanQuestion(question)) return null;
         return {
           question, answer, normalizedKey,
-          inputType: r.inputType || "text",
-          options: Array.isArray(r.options) ? r.options.slice(0, 50) : [],
+          inputType: canonicalInputType(r.inputType),
+          options: Array.isArray(r.options) ? r.options.slice(0, 50).map((x) => String(x).trim()).filter(Boolean) : [],
           ats: r.ats,
           lastDomain: r.domain,
           category: categorizeQuestion(question),
@@ -192,8 +213,35 @@ export const POST = handler(async (req: NextRequest) => {
         },
       }));
 
-      const result = await SavedResponse.bulkWrite(ops, { ordered: false });
-      savedCount = deduped.length;
+      try {
+        await SavedResponse.bulkWrite(ops, { ordered: false });
+        savedCount = deduped.length;
+      } catch (bulkErr) {
+        // Legacy queues can contain one malformed record. Do not make the whole
+        // Sync button fail when the other answers are valid.
+        let okCount = 0;
+        for (const r of deduped) {
+          try {
+            await SavedResponse.findOneAndUpdate(
+              { userId: user._id, normalizedKey: r.normalizedKey },
+              {
+                $set: { question: r.question, answer: r.answer, inputType: r.inputType, options: r.options,
+                  ...(r.ats ? { ats: r.ats } : {}), ...(r.lastDomain ? { lastDomain: r.lastDomain } : {}),
+                  lastUsedAt: new Date(), category: r.category, source: "user" },
+                $setOnInsert: { userId: user._id, normalizedKey: r.normalizedKey },
+                $addToSet: { aliases: r.question },
+                $inc: { useCount: 1 },
+              },
+              { new: true, upsert: true, setDefaultsOnInsert: true }
+            );
+            okCount++;
+          } catch (oneErr) {
+            console.error("[extension/sync] skipped one saved answer", oneErr);
+          }
+        }
+        if (!okCount) throw bulkErr;
+        savedCount = okCount;
+      }
     }
   }
 
