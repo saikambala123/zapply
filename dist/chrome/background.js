@@ -275,9 +275,10 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
         const merged = new Map((heldAnswers ?? []).map((r) => [queueKey(r.question), r]));
         for (const r of (msg.items ?? [])) {
           if (!r?.question || !String(r.answer ?? "").trim()) continue;
+          if (r.userEdited !== true || (r.source && r.source !== "user")) continue;
           const key = queueKey(r.question);
           if (!key || dismissed.has(key)) continue;
-          merged.set(key, { ...r, heldAt: Date.now() });
+          merged.set(key, { ...r, source: "user", userEdited: true, heldAt: Date.now() });
         }
         const held = Array.from(merged.values()).slice(-200);
         await store.set({ heldAnswers: held });
@@ -287,7 +288,8 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
 
       case "ZAPPLY_GET_HELD": {
         const { heldAnswers } = await store.get("heldAnswers");
-        return respond({ ok: true, data: { held: heldAnswers ?? [] } });
+        const held = (heldAnswers ?? []).filter((r) => r?.userEdited === true && (r.source ?? "user") === "user");
+        return respond({ ok: true, data: { held } });
       }
 
       /** Move held answers into the sync queue. `questions` omitted = all. */
@@ -296,7 +298,7 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
         const wanted = msg.questions?.length
           ? new Set(msg.questions.map((q) => queueKey(q)))
           : null;
-        const held = heldAnswers ?? [];
+        const held = (heldAnswers ?? []).filter((r) => r?.userEdited === true && (r.source ?? "user") === "user");
         const moving = held.filter((r) => !wanted || wanted.has(queueKey(r.question)));
         const keeping = held.filter((r) => wanted && !wanted.has(queueKey(r.question)));
 
@@ -343,9 +345,15 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
         const merged = new Map((pendingResponses ?? []).map((r) => [queueKey(r.question), r]));
         for (const r of (msg.responses ?? [])) {
           if (!r?.question || !String(r.answer ?? "").trim()) continue;
+          // Only answers proven to be user edits should ever enter this queue.
+          // Keep an explicit source marker so older/newer UI code can distinguish
+          // corrections from generated values and future changes cannot silently
+          // reintroduce AI-filled fields into Saved Answers.
+          if (r.source && r.source !== "user") continue;
+          if (r.userEdited !== true) continue;
           const key = queueKey(r.question);
           if (!key) continue;
-          merged.set(key, { ...r, queuedAt: Date.now() });
+          merged.set(key, { ...r, source: "user", userEdited: true, queuedAt: Date.now() });
         }
         await store.set({ pendingResponses: Array.from(merged.values()).slice(-500) });
         await refreshBadge();
@@ -354,7 +362,8 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
 
       case "ZAPPLY_GET_PENDING": {
         const { pendingResponses } = await store.get("pendingResponses");
-        return respond({ ok: true, data: { responses: pendingResponses ?? [] } });
+        const responses = (pendingResponses ?? []).filter((r) => r?.userEdited === true && (r.source ?? "user") === "user");
+        return respond({ ok: true, data: { responses } });
       }
 
       /**
@@ -421,7 +430,7 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
        */
       case "ZAPPLY_SYNC_PENDING": {
         const { pendingResponses } = await store.get("pendingResponses");
-        const responses = pendingResponses ?? [];
+        const responses = (pendingResponses ?? []).filter((r) => r?.userEdited === true && (r.source ?? "user") === "user");
 
         let pushed = { ok: true, data: { responsesSaved: 0 } };
         if (responses.length) {

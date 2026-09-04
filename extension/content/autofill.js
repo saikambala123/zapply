@@ -893,7 +893,12 @@
    * enough that saved answers routinely failed to apply.
    */
   function findSavedAnswer(field) {
-    const responses = state.session?.responses ?? [];
+    // The extension should only reuse answers that were explicitly saved by the
+    // applicant. AI/imported records may exist in the dashboard, but they are
+    // not authoritative answers for an application question and must never be
+    // replayed into a dropdown or text field. Older cached records without a
+    // source are treated as legacy user answers until the next bootstrap refresh.
+    const responses = (state.session?.responses ?? []).filter((r) => (r?.source ?? "user") === "user");
     if (!responses.length) return null;
 
     const el = field?.el;
@@ -949,7 +954,13 @@
     // Fuzzy matches stay available, but only at a stronger threshold than the
     // general matcher default. This prevents an unrelated saved response from
     // winning just because two short labels share a few words.
-    if ((best.confidence ?? 0) < 0.82) return null;
+    // Fuzzy question matches are intentionally stricter for choice controls.
+    // A near-match that sounds plausible can select the wrong option and is much
+    // worse than leaving the dropdown/radio blank for the applicant. Exact
+    // question/alias matches remain fully eligible.
+    const choiceField = field?.kind === "select" || field?.kind === "radio" || field?.kind === "checkbox";
+    const minimumConfidence = choiceField ? 0.90 : 0.82;
+    if ((best.confidence ?? 0) < minimumConfidence) return null;
 
     // An exact match means the applicant answered this very question before,
     // by its normalized text or one of its recorded aliases. That outranks a
@@ -2256,6 +2267,7 @@
       ats: state.adapter?.key,
       domain: location.hostname,
       source: "user",
+      userEdited: true,
     });
     el.classList.remove("zapply-needs-you");
     return true;
@@ -2481,14 +2493,11 @@
   }
 
   /**
-   * Offer every answer now in the form for saving.
+   * Check for answers that the applicant actually edited.
    *
-   * Capture used to record only what the applicant typed, on the reasoning that
-   * Zapply already knew everything else. But the queue is the review step before
-   * anything reaches the dashboard, and an answer is worth keeping whoever
-   * produced it — the profile, a saved answer, the model, or the applicant. A
-   * dropdown and a radio group are answers too, which is why this walks the
-   * fields rather than listening for typing.
+   * Autofill values, profile values and AI drafts must never be promoted into
+   * Saved Answers just because they are present in the DOM after a Fill run.
+   * The only values eligible here are fields marked by a trusted user event.
    *
    * Identity and contact details are still left out: a name or a phone number is
    * profile data, not an answer to a question, and banking it would mean the
@@ -2505,8 +2514,13 @@
         const answer = String(readValue(field) ?? "").trim();
         if (!answer) continue;
 
-        // Already saved with exactly this answer — re-queueing it would just be
-        // noise in a list meant for reviewing what changed.
+        // This pass runs immediately after autofill. It must never turn an
+        // AI/profile/saved-answer value into a new Saved Answer. Only a field
+        // that the applicant actually edited is eligible for this review list.
+        // The trusted input/change listeners set this flag when they take over
+        // a field, including native and custom dropdowns/radios.
+        if (!field.el.__zapplyUserEdited) continue;
+
         const saved = findSavedAnswer(field);
         if (saved?.exact && String(saved.answer).trim() === answer) continue;
 
