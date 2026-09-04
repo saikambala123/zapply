@@ -29,7 +29,7 @@ type Row = {
 function typeLabel(inputType?: string) {
   switch (inputType) {
     case "select": return "dropdown";
-    case "radio": return "choice";
+    case "radio": return "radio";
     case "checkbox": return "checkboxes";
     case "textarea": return "long text";
     case "date": return "date";
@@ -164,7 +164,8 @@ export default function ResponsesManager({ initial }: { initial: Row[] }) {
               <li key={r._id} className="px-5 py-4">
                 <div className="flex items-start gap-3">
                   <div className="min-w-0 flex-1">
-                    <p className="text-[14.5px] font-semibold leading-snug">{r.question}</p>
+                    <span className="text-[10px] font-extrabold uppercase tracking-[.06em] text-ink-faint">Question</span>
+                    <p className="mt-0.5 text-[14.5px] font-semibold leading-snug">{r.question}</p>
                     <div className="mt-1 flex flex-wrap items-center gap-2">
                       <span className="chip">{typeLabel(r.inputType)}</span>
                       {r.source === "ai" && (
@@ -231,9 +232,10 @@ export default function ResponsesManager({ initial }: { initial: Row[] }) {
                     onClick={() => { setEditing(r._id); setDraft(r.answer); }}
                     className="mt-2 block w-full rounded-xl border border-line bg-canvas px-3.5 py-2.5 text-left text-[13.5px] leading-relaxed text-ink-soft transition hover:border-brand-200 hover:bg-brand-50/40"
                   >
-                    {r.answer
+                    <span className="block text-[10px] font-extrabold uppercase tracking-[.06em] text-ink-faint">Answer</span>
+                    <span className="mt-1 block">{r.answer
                       ? <AnswerBody answer={r.answer} inputType={r.inputType} options={r.options} />
-                      : <span className="italic text-ink-faint">No answer saved — click to write one</span>}
+                      : <span className="italic text-ink-faint">No answer saved — click to write one</span>}</span>
                   </button>
                 )}
               </li>
