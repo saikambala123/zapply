@@ -897,12 +897,40 @@
     if (!responses.length) return null;
 
     const el = field?.el;
-    const candidates = String(field?.label || "").split(" | ").map((x) => x.trim()).filter(Boolean);
+    const candidates = [];
+    const addCandidate = (value) => {
+      const text = String(value ?? "").trim();
+      if (!text) return;
+      const parts = text.split(" | ").map((x) => x.trim()).filter(Boolean);
+      for (const part of parts) {
+        if (part.length >= 4 && !candidates.includes(part)) candidates.push(part);
+      }
+    };
+
+    // Choice controls are commonly labelled with the *selected option* rather
+    // than the question. The answer was previously saved under the real
+    // question heading, so using only field.label made synced radio/checkbox
+    // answers impossible to find on the next application.
+    if (field) {
+      try { addCandidate(primaryQuestion(field)); } catch {}
+      try { addCandidate(questionHeadingNear(el)); } catch {}
+      try { addCandidate(field.question); } catch {}
+      addCandidate(field.label);
+    }
+
     if (el) {
       ["aria-label", "data-qa", "data-testid", "name", "id"].forEach((attr) => {
         const v = el.getAttribute?.(attr);
-        if (v && v.trim()) candidates.push(M.humanize(v.trim()) || v.trim());
+        if (v && v.trim()) addCandidate(M.humanize(v.trim()) || v.trim());
       });
+
+      const labelledBy = el.getAttribute?.("aria-labelledby");
+      if (labelledBy) {
+        for (const id of labelledBy.split(/\s+/)) {
+          const node = document.getElementById(id);
+          if (node) addCandidate(M.visibleText?.(node) || node.textContent);
+        }
+      }
     }
 
     let best = null;
@@ -912,6 +940,17 @@
       if (hit && (!best || (hit.confidence ?? 0) > (best.confidence ?? 0))) best = hit;
     }
     if (!best) return null;
+
+    // Saved answers that identify an application question exactly (including an
+    // alias captured on another ATS) are always eligible to replay. This is
+    // deliberately checked before profile-derived values in planField so an
+    // explicit Saved Answer remains the user's chosen answer.
+    //
+    // Fuzzy matches stay available, but only at a stronger threshold than the
+    // general matcher default. This prevents an unrelated saved response from
+    // winning just because two short labels share a few words.
+    if ((best.confidence ?? 0) < 0.82) return null;
+
     // An exact match means the applicant answered this very question before,
     // by its normalized text or one of its recorded aliases. That outranks a
     // value derived from the profile; a merely similar question does not.
@@ -1038,7 +1077,15 @@
    */
   async function applyValue(field, value, rule) {
     const el = field.el;
-    if (el.__zapplyUserEdited) return false;
+
+    // Preserve a user-owned value, but allow an explicitly cleared control to
+    // be populated again on the next manual Autofill pass.
+    if (el.__zapplyUserEdited && M.hasValue(el)) return false;
+    if (el.__zapplyUserEdited && !M.hasValue(el)) {
+      el.__zapplyUserEdited = false;
+      el.__zapplyProgrammatic = false;
+      el.__zapplyProgrammaticUntil = 0;
+    }
     if (!document.contains(el)) return false;
     // Already answered by this pass. Opening the same dropdown again cannot
     // improve the answer and is precisely what the user sees as autofill
@@ -1127,7 +1174,17 @@
    */
   function planField(field, profile, settings) {
     const { el, label, kind } = field;
-    if (el.__zapplyUserEdited) return { status: "skipped" };
+
+    // A non-empty field that the applicant edited is theirs and must never be
+    // overwritten on a later Fill click. If they explicitly cleared it, however,
+    // the field is empty again and should be eligible for Autofill on that next
+    // explicit click.
+    if (el.__zapplyUserEdited && M.hasValue(el)) return { status: "skipped" };
+    if (el.__zapplyUserEdited && !M.hasValue(el)) {
+      el.__zapplyUserEdited = false;
+      el.__zapplyProgrammatic = false;
+      el.__zapplyProgrammaticUntil = 0;
+    }
 
     // Written a moment ago by this same pass. Nothing that happens later in the
     // run — a re-scan, a reconcile, the AI pass — may plan it a second time.
@@ -1168,7 +1225,17 @@
     }
     const profileAnswers = Boolean(profileValue) && profileValue !== "__RESUME__" && profileValue !== "__COVER_LETTER__";
 
-    if (saved?.answer && saved.exact && !profileAnswers) {
+    // An explicit Saved Answer is the applicant's stored decision for this
+    // question. It must win over a generic/profile-derived default (for example,
+    // a saved "8" years of experience should not be replaced by a calculated
+    // profile value). Identity/contact/profile-only fields remain protected below.
+    const profileOnly = Boolean(rule?.profileOnly);
+    const protectedIdentity =
+      Boolean(rule?.identity && !rule?.eeo) ||
+      /\b(e-?mail|phone|mobile|telephone|country\s*code|area\s*code|extension|first\s*name|last\s*name|middle\s*name|full\s*name|date\s*of\s*birth|address\s*line|postal|zip\s*code)\b/i
+        .test(String(field?.label ?? "").split("|")[0]);
+
+    if (saved?.answer && !profileOnly && !protectedIdentity) {
       return { status: "fill", key: "saved-answer", value: saved.answer, rule, source: "saved" };
     }
 
@@ -1442,19 +1509,13 @@
     state.runId++;
 
     /**
-     * Start from whatever is already cached and refresh behind the fill.
-     *
-     * This used to be `loadSession(true)` — a forced, awaited round trip to the
-     * dashboard before a single field was touched. On a slow connection that is
-     * a second or more of a button that says "Filling…" while nothing moves,
-     * which is what "it should start immediately when we click fill" is about.
-     *
-     * The background worker keeps the session fresh on its own and re-caches
-     * within a minute of any dashboard change, so the cached copy is current in
-     * every normal case. The refresh is still kicked off, just not waited on.
+     * A manual Fill click is an explicit request for the latest profile/settings/
+     * Saved Answers state. Never start from a stale cached response list: a user
+     * can press Sync in the popup and immediately press Fill on the application,
+     * and that click must see the newly synced answers.
      */
-    let session = state.session ?? (await loadSession(false));
-    loadSession(true).then((fresh) => { if (fresh) state.session = fresh; }).catch(() => {});
+    let session = await loadSession(true);
+    if (session) state.session = session;
     if (session?.profile) {
       state.profile = null;
       state.scoring = null;
@@ -2171,9 +2232,11 @@
     // readValue reports an empty checkbox group as "No". That is the right
     // reading for a single "I agree" box the person deliberately left clear,
     // but for a group nobody has touched yet it is not an answer at all.
-    if (field.kind === "checkbox" && !el.__zapplyUserEdited) {
+    if (field.kind === "checkbox") {
       const members = groupMembersOf(el);
       const anyTicked = members.some((m) => m.checked === true || m.getAttribute?.("aria-checked") === "true");
+      // An unchecked checkbox group is an empty field, not a reusable "No"
+      // answer. Never save that empty state back into Saved Answers.
       if (!anyTicked) return false;
     }
 
