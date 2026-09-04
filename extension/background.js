@@ -58,8 +58,14 @@ async function api(path, options = {}) {
     ...(options.headers ?? {}),
   };
 
+  // Never let a dead network connection leave the popup/content script waiting
+  // forever. Serverless deployments can occasionally stall before returning a
+  // response; the extension should fail fast and keep the form usable.
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+
   try {
-    const res = await fetch(`${base}${path}`, { ...options, headers });
+    const res = await fetch(`${base}${path}`, { ...options, headers, signal: options.signal ?? controller.signal });
     const json = await res.json().catch(() => ({}));
 
     if (res.status === 401) {
@@ -70,7 +76,12 @@ async function api(path, options = {}) {
     if (!res.ok) return { ok: false, error: json.error || `Request failed (${res.status})` };
     return { ok: true, data: json.data };
   } catch (err) {
-    return { ok: false, error: "Can't reach Zapply. Check that the app is running." };
+    const message = err?.name === "AbortError"
+      ? "Zapply took too long to respond. Check your connection and try again."
+      : "Can't reach Zapply. Check your connection and try again.";
+    return { ok: false, error: message };
+  } finally {
+    clearTimeout(timeout);
   }
 }
 

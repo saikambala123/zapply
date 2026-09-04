@@ -590,10 +590,38 @@
       )
     );
     return candidates.find((el) => {
-      if (!M.isFillable(el) || el.disabled) return false;
-      const t = (el.textContent || el.value || "").trim().toLowerCase();
+      if (!M.isFillable(el) || el.disabled || el.getAttribute("aria-disabled") === "true") return false;
+      const t = (el.textContent || el.value || el.getAttribute("aria-label") || "").trim().toLowerCase();
       return /create account|sign in|log in|continue|submit|next/.test(t);
     }) || null;
+  }
+
+  /**
+   * Workday can render the password immediately while its React state is still
+   * one tick behind. Clicking the submit button at that exact moment makes the
+   * UI look filled but the server receives an empty credential. Wait briefly
+   * for every visible password control to contain the saved value and for the
+   * submit control to become enabled. This is a bounded readiness check, not a
+   * second autofill pass.
+   */
+  async function submitAccountWhenReady() {
+    const deadline = Date.now() + 2500;
+    while (Date.now() < deadline && !state.stopRequested) {
+      const fields = passwordFields();
+      const readyPasswords = fields.length > 0 && fields.every((el) => String(el.value ?? "").trim().length > 0);
+      const btn = findAccountSubmitButton();
+      if (readyPasswords && btn && !btn.disabled && btn.getAttribute("aria-disabled") !== "true") {
+        // Let controlled-field onChange/state updates flush before the click.
+        await sleep(80);
+        const latest = findAccountSubmitButton();
+        if (latest && !latest.disabled && latest.getAttribute("aria-disabled") !== "true") {
+          latest.click();
+          return true;
+        }
+      }
+      await sleep(100);
+    }
+    return false;
   }
 
   /**
@@ -1479,11 +1507,9 @@
             result.keys.push("password");
 
             if (accountSettings.zapplyAutoSubmitAccount !== false) {
-              await sleep(180);
-              const btn = findAccountSubmitButton();
-              if (btn) {
-                btn.click();
-                result.autoSubmitted = true;
+              result.autoSubmitted = await submitAccountWhenReady();
+              if (!result.autoSubmitted) {
+                result.accountSubmitBlocked = true;
               }
             }
           }
