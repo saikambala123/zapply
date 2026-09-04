@@ -140,11 +140,12 @@ export const POST = handler(async (req: NextRequest) => {
           ats: r.ats,
           lastDomain: r.domain,
           category: categorizeQuestion(question),
+          source: "user" as const,
         };
       })
       .filter(Boolean) as Array<{
         question: string; answer: string; normalizedKey: string; inputType: string;
-        options: string[]; ats?: string; lastDomain?: string; category: string;
+        options: string[]; ats?: string; lastDomain?: string; category: string; source: "user";
       }>;
 
     if (clean.length) {
@@ -167,6 +168,10 @@ export const POST = handler(async (req: NextRequest) => {
               ...(r.lastDomain ? { lastDomain: r.lastDomain } : {}),
               lastUsedAt: new Date(),
               category: r.category,
+              // An explicit user correction owns this answer even when the
+              // previous record was AI/imported. This upgrades the source so
+              // the fixed answer becomes eligible for extension reuse.
+              source: "user",
             },
             $setOnInsert: {
               userId: user._id,
