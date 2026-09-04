@@ -1,24 +1,18 @@
 /**
- * Held-answer persistence.
+ * Pending-answer persistence and legacy migration.
  *
  *   node test/held-answers.spec.mjs
  *
- * Held answers used to live in a Map inside the content script. A Workday
- * application navigates on every step, each navigation tears the content script
- * down, and the Map went with it — so an answer edited on step 2 was gone before
- * the applicant reached the popup, and saving answers appeared to do nothing.
- *
- * They live in extension storage now. This runs the background's handlers
- * against a fake storage to prove an answer survives a teardown, that saving
- * moves it into the sync queue, and that nothing is uploaded on its own.
+ * Manual answers are now a durable local pending queue. They are uploaded only
+ * when the applicant presses Sync now. Older builds used `heldAnswers`; the
+ * background worker migrates that bucket into the same queue so upgrades do
+ * not lose answers.
  */
 
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
 const EXT = process.env.ZAPPLY_EXT || "extension";
-
-/* Enough of the extension APIs for the message handlers to run. */
 const disk = {};
 const chrome = {
   storage: { local: {
@@ -61,94 +55,39 @@ let fails = 0;
 const check = (label, got, want) => {
   const ok = JSON.stringify(got) === JSON.stringify(want);
   if (!ok) fails++;
-  console.log(`${ok ? "  ok  " : "  FAIL"} ${label}`);
-  if (!ok) console.log(`         got ${JSON.stringify(got)}  want ${JSON.stringify(want)}`);
+  console.log(`${ok ? "  ok  " : " FAIL "} ${label}${ok ? "" : `\n         got ${JSON.stringify(got)} want ${JSON.stringify(want)}`}`);
 };
 
-const Q1 = "Why do you want to work here?";
-const Q2 = "Please specify your veteran status.";
+console.log("\nmanual answers live in the durable pending queue");
+await call({ type: "ZAPPLY_QUEUE_RESPONSES", responses: [
+  { question: "Why do you want to work here?", answer: "Because of the product.", inputType: "textarea" },
+  { question: "How did you hear about us?", answer: "Referral", inputType: "radio", options: ["LinkedIn", "Referral", "Job Board"] },
+  { question: "Which shifts are you available for?", answer: "Evenings, Weekends", inputType: "checkbox", options: ["Mornings", "Evenings", "Weekends"] },
+  { question: "Highest level of education?", answer: "Master's Degree", inputType: "select", options: ["High School", "Bachelor's Degree", "Master's Degree"] },
+] });
+check("four manual answers are pending", disk.pendingResponses?.length, 4);
+check("radio keeps its question", disk.pendingResponses.find((r) => r.inputType === "radio")?.question, "How did you hear about us?");
+check("checkbox keeps its question", disk.pendingResponses.find((r) => r.inputType === "checkbox")?.question, "Which shifts are you available for?");
+check("dropdown keeps its type", disk.pendingResponses.find((r) => r.inputType === "select")?.inputType, "select");
+check("badge counts pending answers", chrome.__badge, "4");
 
-console.log("\nan edit is held, not banked");
-await call({ type: "ZAPPLY_HOLD_ANSWERS", items: [{ question: Q1, answer: "Because of the team.", inputType: "textarea" }] });
-check("held answer is stored", disk.heldAnswers?.length, 1);
-check("nothing has entered the sync queue", disk.pendingResponses?.length ?? 0, 0);
+console.log("\nre-answering a question replaces the local pending record");
+await call({ type: "ZAPPLY_QUEUE_RESPONSES", responses: [{ question: "How did you hear about us?", answer: "LinkedIn", inputType: "radio", options: ["LinkedIn", "Referral", "Job Board"] }] });
+check("queue stays deduplicated", disk.pendingResponses.length, 4);
+check("latest answer wins", disk.pendingResponses.find((r) => r.question === "How did you hear about us?")?.answer, "LinkedIn");
 
-console.log("\nit survives the content script being torn down");
-const held = await call({ type: "ZAPPLY_GET_HELD" });
-check("still readable after a navigation", held.data.held[0].question, Q1);
-check("badge shows there is something waiting", chrome.__badge, "1");
+console.log("\nlegacy held answers migrate into pending");
+await call({ type: "ZAPPLY_HOLD_ANSWERS", items: [{ question: "Legacy question", answer: "Legacy answer", inputType: "select" }] });
+const pending = await call({ type: "ZAPPLY_GET_PENDING" });
+check("legacy answer appears in pending", pending.data.responses.some((r) => r.question === "Legacy question"), true);
+check("legacy held bucket is removed", disk.heldAnswers, undefined);
+check("legacy answer is now in pendingResponses", disk.pendingResponses.some((r) => r.question === "Legacy question"), true);
 
-console.log("\na second answer from a later step joins it");
-await call({ type: "ZAPPLY_HOLD_ANSWERS", items: [{ question: Q2, answer: "I am not a protected veteran", inputType: "select" }] });
-check("two answers held across two steps", disk.heldAnswers.length, 2);
-
-console.log("\nre-answering one question replaces it rather than duplicating");
-await call({ type: "ZAPPLY_HOLD_ANSWERS", items: [{ question: Q1, answer: "Because of the product.", inputType: "textarea" }] });
-check("still two held", disk.heldAnswers.length, 2);
-check("the newer wording won", disk.heldAnswers.find((r) => r.question === Q1).answer, "Because of the product.");
-
-console.log("\nsaving one moves only that one into the sync queue");
-await call({ type: "ZAPPLY_SAVE_HELD", questions: [Q1] });
-check("one left held", disk.heldAnswers.length, 1);
-check("one queued for sync", disk.pendingResponses.length, 1);
-check("the right one was queued", disk.pendingResponses[0].question, Q1);
-check("the answer type came with it", disk.pendingResponses[0].inputType, "textarea");
-
-console.log("\nsaving the rest empties the held list");
-await call({ type: "ZAPPLY_SAVE_HELD" });
-check("nothing held", disk.heldAnswers.length, 0);
-check("both queued", disk.pendingResponses.length, 2);
-check("the dropdown kept its type", disk.pendingResponses.find((r) => r.question === Q2).inputType, "select");
-
-console.log("\ndiscarding removes without queueing");
-await call({ type: "ZAPPLY_HOLD_ANSWERS", items: [{ question: "A typo", answer: "asdf" }] });
-await call({ type: "ZAPPLY_DISCARD_HELD", questions: ["A typo"] });
-check("discarded answer is gone", disk.heldAnswers.length, 0);
-check("and was never queued", disk.pendingResponses.length, 2);
-
-console.log("\nClear empties both buckets");
-await call({ type: "ZAPPLY_HOLD_ANSWERS", items: [{ question: "Held one", answer: "a" }, { question: "Held two", answer: "b" }] });
-check("something is held", disk.heldAnswers.length, 2);
-check("something is queued", disk.pendingResponses.length, 2);
+console.log("\nclear only clears the local queue");
 const cleared = await call({ type: "ZAPPLY_CLEAR_PENDING" });
-check("it reports clearing both", cleared.data.cleared, 4);
-check("held answers are gone", "heldAnswers" in disk, false);
-check("queued answers are gone", "pendingResponses" in disk, false);
+check("clear reports every pending answer", cleared.data.cleared, 5);
+check("pending queue is empty after clear", disk.pendingResponses, undefined);
+check("legacy held bucket stays empty", disk.heldAnswers, undefined);
 
-const after = await call({ type: "ZAPPLY_GET_HELD" });
-check("and nothing comes back on the next read", after.data.held.length, 0);
-check("the badge is empty", chrome.__badge, "");
-
-console.log("\na dismissed answer cannot come back on the next form");
-await call({ type: "ZAPPLY_HOLD_ANSWERS", items: [{ question: "Why this company?", answer: "draft" }] });
-check("it is held", disk.heldAnswers.length, 1);
-await call({ type: "ZAPPLY_DISCARD_HELD", questions: ["Why this company?"] });
-check("discarding empties the list", disk.heldAnswers.length, 0);
-
-// The same question, captured again while filling a different application.
-await call({ type: "ZAPPLY_HOLD_ANSWERS", items: [{ question: "Why this company?", answer: "draft" }] });
-check("it does not come back", disk.heldAnswers.length, 0);
-await call({ type: "ZAPPLY_HOLD_ANSWERS", items: [{ question: "  WHY THIS COMPANY?  ", answer: "draft" }] });
-check("nor in different casing or spacing", disk.heldAnswers.length, 0);
-
-console.log("\nbut a new question is unaffected");
-await call({ type: "ZAPPLY_HOLD_ANSWERS", items: [{ question: "Notice period?", answer: "2 weeks" }] });
-check("a different question is still held", disk.heldAnswers.length, 1);
-
-console.log("\nsaving one later lifts its dismissal");
-await call({ type: "ZAPPLY_DISCARD_HELD", questions: ["Notice period?"] });
-await call({ type: "ZAPPLY_HOLD_ANSWERS", items: [{ question: "Notice period?", answer: "2 weeks" }] });
-check("dismissed, so not held", disk.heldAnswers.length, 0);
-await call({ type: "ZAPPLY_HOLD_ANSWERS", items: [{ question: "Fresh question", answer: "x" }] });
-await call({ type: "ZAPPLY_SAVE_HELD", questions: ["Fresh question"] });
-// queueKey strips punctuation and stop-words, so the stored key is "notice period".
-check("saving a different one leaves the dismissal alone", disk.dismissedAnswers.includes("notice period"), true);
-
-console.log("\nClear also dismisses what it clears");
-await call({ type: "ZAPPLY_HOLD_ANSWERS", items: [{ question: "Salary expectation?", answer: "n/a" }] });
-await call({ type: "ZAPPLY_CLEAR_PENDING" });
-await call({ type: "ZAPPLY_HOLD_ANSWERS", items: [{ question: "Salary expectation?", answer: "n/a" }] });
-check("a cleared answer stays gone", (disk.heldAnswers ?? []).length, 0);
-
-console.log(fails ? `\n${fails} failing\n` : "\nall passing\n");
+console.log(`\n${fails ? `${fails} failing` : "all passing"}\n`);
 process.exit(fails ? 1 : 0);

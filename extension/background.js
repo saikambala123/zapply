@@ -190,6 +190,31 @@ function queueKey(question) {
     .slice(0, 180);
 }
 
+/** Move legacy held answers into the single durable pending queue.
+ *
+ * Older builds kept manually edited answers in `heldAnswers` until the user
+ * clicked a per-answer Save button. The current contract is simpler: manual
+ * edits are local pending answers, and only an explicit Sync now uploads them.
+ * Migrating here keeps old installs from losing answers during the upgrade.
+ */
+async function getPendingResponses({ migrateHeld = true } = {}) {
+  const { pendingResponses, heldAnswers } = await store.get(["pendingResponses", "heldAnswers"]);
+  const queue = pendingResponses ?? [];
+  if (!migrateHeld || !heldAnswers?.length) return queue;
+
+  const merged = new Map(queue.map((r) => [queueKey(r.question), r]));
+  for (const r of heldAnswers) {
+    if (!r?.question || !String(r.answer ?? "").trim()) continue;
+    const key = queueKey(r.question);
+    if (!key) continue;
+    merged.set(key, { ...r, queuedAt: r.queuedAt ?? r.heldAt ?? Date.now() });
+  }
+  const next = Array.from(merged.values()).slice(-500);
+  await store.set({ pendingResponses: next });
+  await store.remove("heldAnswers");
+  return next;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Message router                                                     */
 /* ------------------------------------------------------------------ */
@@ -353,8 +378,8 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
       }
 
       case "ZAPPLY_GET_PENDING": {
-        const { pendingResponses } = await store.get("pendingResponses");
-        return respond({ ok: true, data: { responses: pendingResponses ?? [] } });
+        const responses = await getPendingResponses();
+        return respond({ ok: true, data: { responses } });
       }
 
       /**
@@ -375,8 +400,7 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
        * queue is keyed by, so the entry removed is the one shown.
        */
       case "ZAPPLY_DELETE_PENDING": {
-        const { pendingResponses } = await store.get("pendingResponses");
-        const queue = pendingResponses ?? [];
+        const queue = await getPendingResponses();
         const target = queueKey(msg.question);
         const kept = queue.filter((r) => queueKey(r.question) !== target);
         await store.set({ pendingResponses: kept });
@@ -389,24 +413,9 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
       }
 
       case "ZAPPLY_CLEAR_PENDING": {
-        const { pendingResponses, heldAnswers } = await store.get(["pendingResponses", "heldAnswers"]);
-        /**
-         * Clear means clear.
-         *
-         * This only removed `pendingResponses`. Held answers were added later
-         * and live in their own key, so they survived every Clear and were
-         * counted and listed again the moment the popup reopened — the same
-         * answers coming back "again and again" however many times Clear was
-         * confirmed.
-         */
-        const cleared = (pendingResponses?.length ?? 0) + (heldAnswers?.length ?? 0);
-        // Everything cleared is also remembered as turned down, so it cannot be
-        // recaptured on the next form and reappear.
-        const { dismissedAnswers } = await store.get("dismissedAnswers");
-        const dismissed = new Set(dismissedAnswers ?? []);
-        (heldAnswers ?? []).forEach((r) => { const k = queueKey(r.question); if (k) dismissed.add(k); });
+        const queue = await getPendingResponses();
+        const cleared = queue.length;
         await store.remove(["pendingResponses", "heldAnswers"]);
-        await store.set({ dismissedAnswers: Array.from(dismissed).slice(-500) });
         await refreshBadge();
         return respond({ ok: true, data: { cleared } });
       }
@@ -420,67 +429,50 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
        * nothing. The refresh now always runs.
        */
       case "ZAPPLY_SYNC_PENDING": {
-        // Sync is the only action that writes saved answers to the server.
-        // Include both explicitly queued items and still-unsaved edits so the
-        // user can press Sync now once and persist everything awaiting review.
-        const { pendingResponses, heldAnswers } = await store.get(["pendingResponses", "heldAnswers"]);
-        const merged = new Map();
-        for (const r of [...(pendingResponses ?? []), ...(heldAnswers ?? [])]) {
-          const key = queueKey(r?.question);
-          if (!key || !String(r?.answer ?? "").trim()) continue;
-          merged.set(key, r);
-        }
-        const candidates = Array.from(merged.values());
-
-        // Do not re-save an unchanged answer. This keeps Sync focused on new
-        // questions or real edits instead of bumping useCount on every click.
-        const cached = await store.get("session");
-        const saved = cached.session?.responses ?? [];
-        const same = (a, b) => {
-          const answerA = String(a?.answer ?? "").trim();
-          const answerB = String(b?.answer ?? "").trim();
-          const typeA = String(a?.inputType ?? "text");
-          const typeB = String(b?.inputType ?? "text");
-          const optsA = JSON.stringify((a?.options ?? []).map((x) => String(x).trim()));
-          const optsB = JSON.stringify((b?.options ?? []).map((x) => String(x).trim()));
-          return answerA === answerB && typeA === typeB && optsA === optsB;
-        };
-        const toPush = candidates.filter((r) => {
-          const key = queueKey(r.question);
-          const existing = saved.find((x) => queueKey(x.question) === key || x.normalizedKey === key);
-          return !existing || !same(existing, r);
-        });
+        const responses = await getPendingResponses();
 
         let pushed = { ok: true, data: { responsesSaved: 0 } };
-        if (toPush.length) {
+        if (responses.length) {
           pushed = await api("/api/extension/sync", {
             method: "POST",
-            body: JSON.stringify({ responses: toPush }),
+            body: JSON.stringify({ responses }),
           });
+          if (pushed.ok) await store.remove(["pendingResponses", "heldAnswers"]);
         }
 
-        // Failed uploads stay local so Sync can be retried. Accepted entries are
-        // removed only after the server confirms the whole request.
-        if (pushed.ok) await store.remove(["pendingResponses", "heldAnswers"]);
-
-        const session = await getSession({ force: true });
-        const pulled = session?.responses?.length ?? saved.length;
-
-        if (!pushed.ok) {
-          await refreshBadge();
-          return respond(pushed);
+        let session = null;
+        if (pushed.ok) {
+          session = await getSession({ force: true });
+          // Even if the immediate pull times out, make the just-synced answers
+          // available to the next Fill from the local cache. A later refresh
+          // will reconcile the cache with the server and add real ids.
+          if (!session) {
+            const cached = await store.get("session");
+            session = cached.session ?? null;
+          }
+          if (session && responses.length) {
+            const byKey = new Map((session.responses ?? []).map((r) => [queueKey(r.question), r]));
+            for (const r of responses) {
+              const key = queueKey(r.question);
+              byKey.set(key, { ...(byKey.get(key) ?? {}), ...r });
+            }
+            session.responses = Array.from(byKey.values());
+            await store.set({ session, sessionAt: Date.now() });
+          }
         }
 
-        if (session) setBadge("", "#00C2A8");
-        else await refreshBadge();
+        if (pushed.ok && session) setBadge("", "#00C2A8");
+        else setBadge("!", "#E5484D");
+
+        if (!pushed.ok) return respond(pushed);
+        if (!session) return respond({ ok: false, error: "Couldn't reach Zapply to load your saved answers." });
 
         return respond({
           ok: true,
           data: {
-            responsesSaved: toPush.length,
-            savedAnswers: pulled,
-            syncedAt: session?.syncedAt ?? new Date().toISOString(),
-            ...(session ? {} : { pullWarning: "Answers were uploaded, but the latest saved-answer list could not be refreshed yet." }),
+            responsesSaved: responses.length,
+            savedAnswers: session.responses?.length ?? 0,
+            syncedAt: session.syncedAt ?? new Date().toISOString(),
           },
         });
       }

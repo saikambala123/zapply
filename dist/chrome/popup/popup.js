@@ -175,78 +175,13 @@ try { chrome.storage.local.remove(["zapplyAccountPassword"]); } catch {}
  * they would join, where the decision can be made once and with the full list
  * in view.
  */
-async function heldAnswers() {
-  // Read from extension storage, not from the page. Asking the tab meant the
-  // list was empty whenever the content script had not loaded there or had been
-  // torn down by a step navigation — which on a Workday application is most of
-  // the time, and is why edited answers never appeared here.
-  const res = await send({ type: "ZAPPLY_GET_HELD" });
-  return res?.data?.held ?? [];
-}
-
-function answerTypeLabel(inputType) {
-  switch (inputType) {
-    case "select": return "dropdown";
-    case "radio": return "radio";
-    case "checkbox": return "checkboxes";
-    case "textarea": return "long text";
-    default: return inputType || "text";
-  }
-}
-
-function renderPendingAnswer(answer, inputType) {
-  const wrap = document.createElement("span");
-  wrap.className = "pending__a-row";
-  const value = String(answer ?? "").trim();
-  const values = ["select", "radio", "checkbox"].includes(inputType)
-    ? value.split(/\s*(?:,|;|\|)\s*/).filter(Boolean)
-    : [value];
-  values.forEach((item) => {
-    const chip = document.createElement("span");
-    chip.className = ["select", "radio", "checkbox"].includes(inputType)
-      ? "pending__choice"
-      : "pending__plain";
-    chip.textContent = item;
-    wrap.appendChild(chip);
-  });
-  return wrap;
-}
-
-async function heldCommand(type, question) {
-  const questions = question ? [question] : undefined;
-  await send({
-    type: type === "ZAPPLY_PENDING_SAVE" ? "ZAPPLY_SAVE_HELD" : "ZAPPLY_DISCARD_HELD",
-    questions,
-  });
-  // Clear the on-page outline too, when there is a page to clear it on.
-  try {
-    const tab = await activeTab();
-    if (tab?.id) chrome.tabs.sendMessage(tab.id, { type, question }, () => void chrome.runtime.lastError);
-  } catch {}
-  // refreshPending() always collapses the list before repopulating it — fine
-  // when it's called on its own, but here it closed the list on every single
-  // Save/discard, so reviewing several held answers meant reopening it after
-  // each one. Reopen it again when there is more left to review, matching the
-  // queued-answer remove button below.
-  const left = await refreshPending();
-  if (left) {
-    $("pending-list").hidden = false;
-    $("view-pending").textContent = "Hide";
-    $("view-pending").setAttribute("aria-expanded", "true");
-  }
-}
-
 async function refreshPending() {
   const saved = session?.responses?.length ?? 0;
   const res = await send({ type: "ZAPPLY_GET_PENDING" });
   const queued = res?.data?.responses ?? [];
-  const held = await heldAnswers();
-  const pending = queued.length + held.length;
+  const pending = queued.length;
 
-  // This stat is the server-side Saved Answers count. Pending/unsaved items
-  // are shown separately below so the number never implies they were already
-  // persisted.
-  $("stat-answers").textContent = String(saved);
+  $("stat-answers").textContent = pending ? `${saved}+${pending}` : String(saved);
 
   const btn = $("clear-pending");
   btn.disabled = false;
@@ -259,135 +194,73 @@ async function refreshPending() {
   $("view-pending").setAttribute("aria-expanded", "false");
 
   if (pending) {
-    // The buttons beside it say what the actions are; a third sentence
-    // explaining them only pushed the list itself off the screen.
-    const parts = [];
-    if (held.length) parts.push(`${held.length} unsaved`);
-    if (queued.length) parts.push(`${queued.length} waiting to sync`);
-    $("pending-note").textContent = parts.join(" · ");
-
-    // One click for the common case: several answers held across the steps of
-    // one application.
-    const saveAll = $("save-all-held");
-    if (saveAll) {
-      saveAll.hidden = held.length < 2;
-      saveAll.textContent = `Save all ${held.length}`;
-    }
-    renderPendingList(queued, held);
+    $("pending-note").textContent = `${pending} waiting to sync`;
+    renderPendingList(queued);
   }
   return pending;
 }
 
-/**
- * What Sync now would actually upload.
- *
- * The count alone gave no way to tell a useful answer from a typo before
- * committing it to the dashboard — and no way to tell which questions are new
- * against which will overwrite an answer already saved.
- */
-function renderPendingList(queued, held = []) {
+/** Render exactly what Sync now will upload: question, answer, and control type. */
+function renderPendingList(queued) {
   const list = $("pending-list");
   list.innerHTML = "";
-
-  const savedKeys = new Set(
-    (session?.responses ?? []).map((r) => normalizeQuestion(r.question || ""))
-  );
-
-  // Unsaved edits come first: they are the ones still awaiting a decision.
-  held.forEach((entry) => {
-    const question = String(entry.question || "").trim();
-    const answer = String(entry.answer ?? "").trim();
-
-    const li = document.createElement("li");
-    li.className = "pending__item--held";
-
-    const text = document.createElement("div");
-    text.className = "pending__text";
-
-    const q = document.createElement("span");
-    q.className = "pending__q";
-    q.textContent = question;
-    const tag = document.createElement("span");
-    tag.className = "pending__held";
-    tag.textContent = " \u00b7 unsaved";
-    q.appendChild(tag);
-
-    const a = document.createElement("span");
-    a.className = "pending__a";
-    a.textContent = answer.length > 110 ? `${answer.slice(0, 110)}\u2026` : answer;
-
-    text.append(q, a);
-
-    const save = document.createElement("button");
-    save.type = "button";
-    save.className = "pending__save";
-    save.textContent = "Save";
-    save.title = "Keep this answer and reuse it on your next application";
-    save.addEventListener("click", () => heldCommand("ZAPPLY_PENDING_SAVE", question));
-
-    const drop = document.createElement("button");
-    drop.type = "button";
-    drop.className = "pending__x";
-    drop.textContent = "\u00d7";
-    drop.setAttribute("aria-label", `Discard unsaved answer for ${question}`);
-    drop.addEventListener("click", () => heldCommand("ZAPPLY_PENDING_DISCARD", question));
-
-    li.append(text, save, drop);
-    list.appendChild(li);
-  });
 
   queued.forEach((entry) => {
     const question = String(entry.question || "").trim();
     const answer = String(entry.answer ?? "").trim();
-    const updates = savedKeys.has(normalizeQuestion(question));
+    const type = String(entry.inputType || "text").toLowerCase();
 
     const li = document.createElement("li");
+
     const text = document.createElement("div");
     text.className = "pending__text";
 
+    const qLabel = document.createElement("span");
+    qLabel.className = "pending__label";
+    qLabel.textContent = "Question";
+
     const q = document.createElement("span");
     q.className = "pending__q";
-    q.textContent = question;
-    const tag = document.createElement("span");
-    tag.className = updates ? "pending__new" : "pending__new";
-    tag.textContent = ` · ${updates ? "edited" : "new"} · ${answerTypeLabel(entry.inputType)}`;
-    q.appendChild(tag);
+    q.textContent = question || "Question not detected";
 
-    const a = document.createElement("div");
+    const aLabel = document.createElement("span");
+    aLabel.className = "pending__label";
+    aLabel.textContent = "Answer";
+
+    const a = document.createElement("span");
     a.className = "pending__a";
-    const prefix = document.createElement("span");
-    prefix.className = "pending__prefix";
-    prefix.textContent = updates ? "Replaces saved answer" : "Answer";
-    a.appendChild(prefix);
-    if (answer.length > 110 && !["select", "radio", "checkbox"].includes(entry.inputType)) {
-      const plain = document.createElement("span");
-      plain.className = "pending__plain";
-      plain.textContent = `${answer.slice(0, 110)}…`;
-      a.appendChild(plain);
-    } else {
-      a.appendChild(renderPendingAnswer(answer, entry.inputType));
+    a.textContent = answer.length > 180 ? `${answer.slice(0, 180)}…` : answer;
+
+    const meta = document.createElement("div");
+    meta.className = "pending__meta";
+    const typeTag = document.createElement("span");
+    typeTag.className = "pending__type";
+    typeTag.textContent = type === "select" ? "dropdown" : type === "radio" ? "radio" : type === "checkbox" ? "checkboxes" : type;
+    meta.appendChild(typeTag);
+    if (Array.isArray(entry.options) && entry.options.length && (type === "select" || type === "radio" || type === "checkbox")) {
+      const options = document.createElement("span");
+      options.className = "pending__options";
+      options.textContent = `${entry.options.length} options`;
+      meta.appendChild(options);
     }
 
-    text.append(q, a);
+    text.append(qLabel, q, aLabel, a, meta);
 
-    // Removing one answer without discarding the whole queue.
     const x = document.createElement("button");
     x.type = "button";
     x.className = "pending__x";
-    x.textContent = "\u00D7";
+    x.textContent = "×";
     x.title = "Remove this answer";
     x.setAttribute("aria-label", `Remove "${question}" from the sync queue`);
     x.addEventListener("click", async () => {
       x.disabled = true;
-      const res = await send({ type: "ZAPPLY_DELETE_PENDING", question });
-      if (!res.ok) {
+      const result = await send({ type: "ZAPPLY_DELETE_PENDING", question });
+      if (!result.ok) {
         x.disabled = false;
-        setStatus("warn", "Couldn't remove it", res.error || "Try again in a moment.");
+        setStatus("warn", "Couldn't remove it", result.error || "Try again in a moment.");
         return;
       }
       const left = await refreshPending();
-      // refreshPending collapses the list, so reopen it while there is more to
-      // review — removing one answer shouldn't hide the rest.
       if (left) {
         $("pending-list").hidden = false;
         $("view-pending").textContent = "Hide";
@@ -420,9 +293,6 @@ $("view-pending").addEventListener("click", () => {
   $("view-pending").setAttribute("aria-expanded", String(open));
 });
 
-$("save-all-held").addEventListener("click", async () => {
-  await heldCommand("ZAPPLY_PENDING_SAVE");
-});
 
 $("clear-pending").addEventListener("click", async () => {
   const btn = $("clear-pending");

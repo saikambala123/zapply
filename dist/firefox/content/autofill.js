@@ -1142,8 +1142,6 @@
       // applicant's. Without it, every field Zapply filled would be queued as
       // though they had answered it by hand.
       el.__zapplyWrittenValue = typeof value === "object" ? null : String(value);
-      el.__zapplyWasFilled = true;
-      el.__zapplyUserEdited = false;
     }
 
     // Each setter self-verifies; verifyField is an independent second opinion.
@@ -1830,7 +1828,6 @@
     state.lastRun = result;
 
     watchUnmatched();
-    queueAnswersFromForm();
     scheduleSettleCheck();
 
     const settings = state.session?.settings ?? {};
@@ -1971,6 +1968,39 @@
    * in the group container that isn't itself an option.
    */
   function questionHeadingNear(el) {
+    // Prefer explicit accessibility labels on the control or its choice group.
+    // Workday frequently puts the question on aria-labelledby while each radio
+    // itself is labelled only with the selected option ("Yes", "No", etc.).
+    try {
+      const ids = (el.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean);
+      for (const id of ids) {
+        const node = document.getElementById(id);
+        const text = node && M.visibleText(node);
+        if (text && text.length >= 8 && text.length <= 300) return text;
+      }
+      const group = el.closest("fieldset, [role='radiogroup'], [role='group']");
+      if (group) {
+        const groupIds = (group.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean);
+        for (const id of groupIds) {
+          const node = document.getElementById(id);
+          const text = node && M.visibleText(node);
+          if (text && text.length >= 8 && text.length <= 300) return text;
+        }
+        const aria = String(group.getAttribute("aria-label") || "").trim();
+        if (aria && aria.length >= 8 && aria.length <= 300 && !M.optionTextsFor(el).some((o) => M.normalizeChoiceText(o) === M.normalizeChoiceText(aria))) {
+          return aria;
+        }
+      }
+    } catch {}
+
+    // Native fieldsets are the most reliable semantic boundary.
+    try {
+      const fs = el.closest("fieldset");
+      const legend = fs?.querySelector("legend");
+      const text = legend && M.visibleText(legend);
+      if (text && text.length >= 8 && text.length <= 300) return text;
+    } catch {}
+
     let node = el.parentElement;
     for (let depth = 0; node && depth < 6; depth++, node = node.parentElement) {
       if (node === document.body || node === document.documentElement) break;
@@ -2002,33 +2032,17 @@
     const parts = String(field?.label ?? "").split("|").map((x) => x.trim()).filter(Boolean);
     const isChoice = field?.kind === "radio" || field?.kind === "checkbox";
 
-    const looksMachineGenerated = (text) => {
-      const s = String(text ?? "").trim();
-      if (!s) return true;
-      if (/^(?:data[-_]|test[-_]|qa[-_]|automation[-_]|field[-_]|question[-_]|input[-_])/i.test(s)) return true;
-      if (/\b(?:gh|greenhouse|lever|ashby)\b.*\b(?:quest|question|checkbox|radio)\b/i.test(s) && /[0-9a-f]{8,}/i.test(s)) return true;
-      if (/[0-9a-f]{8}(?:[- ]+[0-9a-f]{4}){1,3}[- ]*[0-9a-f]{0,12}/i.test(s) && /\b(?:quest|question|checkbox|radio|field)\b/i.test(s)) return true;
-      return false;
-    };
-
     if (isChoice) {
-      // Choice controls often expose an option label as their first derived
-      // description. Prefer the human-visible question heading before any
-      // machine id (Workday/Greenhouse test ids were being stored as the
-      // question, making Pending/Saved Answers unreadable).
-      const heading = questionHeadingNear(field.el);
-      if (heading && !looksMachineGenerated(heading)) return heading;
-
       let options = [];
       try { options = (M.optionTextsFor(field.el) || []).map((o) => o.toLowerCase()); } catch {}
       const notAnOption = parts.find(
-        (p) => !options.includes(p.toLowerCase()) && (p.length > 12 || /\?$/.test(p)) && !looksMachineGenerated(p)
+        (p) => !options.includes(p.toLowerCase()) && (p.length > 12 || /\?$/.test(p))
       );
       if (notAnOption) return notAnOption;
+      const heading = questionHeadingNear(field.el);
+      if (heading) return heading;
     }
-
-    const visible = parts.find((p) => !looksMachineGenerated(p));
-    return visible || parts[0] || "";
+    return parts[0] || "";
   }
 
   /** Every control that answers the same question as this one. */
@@ -2241,19 +2255,32 @@
     const el = field.el;
     if (!document.contains(el)) return false;
 
-    // The background sync queue is a review queue for answers the applicant
-    // supplied, not a dump of everything Zapply filled. A sweep is only allowed
-    // to capture a field after a trusted user interaction marked it edited.
-    // This is especially important after dropdown/radio/checkbox fills, whose
-    // own trailing change/click events can fire after the programmatic flag has
-    // expired and previously caused the whole filled form to appear as pending.
-    if (!userDriven && !el.__zapplyUserEdited) return false;
-
     const answer = String(readValue(field) ?? "").trim();
     if (!answer) return false;
     if (/^(select|choose|please select|--)/i.test(answer)) return false;
+
+    // Capture only a real change made by the applicant. The old post-fill sweep
+    // walked every watched field after any page event and treated non-empty
+    // profile values, portal defaults and prefilled values as new saved answers.
+    // Keep a baseline from the moment we start watching the control, then require
+    // either a change from that baseline or a value that differs from Zapply's own
+    // last write. This is what makes "pending" mean manual answers/edits only.
+    const baseline = el.__zapplyCaptureBaseline;
+    const baselineKnown = baseline !== undefined && baseline !== null;
+    const changedFromBaseline = baselineKnown && String(baseline).trim() !== answer;
+    const changedFromWritten = el.__zapplyWrittenValue != null && !matchesWritten(el, answer);
+
+    // Opening a dropdown or clicking an already-selected radio is interaction,
+    // not a new answer. Do not queue it unless the final value actually changed.
+    if (el.__zapplyWrittenValue != null && matchesWritten(el, answer)) return false;
+    if (!changedFromBaseline && !changedFromWritten) return false;
+
+    // A sweep has no proof of human intent. It may only record when the control
+    // has already been marked as user-edited by a trusted event, or when it can
+    // prove the value no longer matches the value Zapply wrote (important for
+    // portalled dropdown options whose click does not bubble through the control).
+    if (!userDriven && !el.__zapplyUserEdited && !changedFromWritten) return false;
     if (el.__zapplyLastCaptured === answer) return false;
-    if (!userDriven && !el.__zapplyUserEdited && matchesWritten(el, answer)) return false;
 
     // readValue reports an empty checkbox group as "No". That is the right
     // reading for a single "I agree" box the person deliberately left clear,
@@ -2271,7 +2298,7 @@
 
     el.__zapplyLastCaptured = answer;
     if (!worthSaving(field, answer)) return false;
-    holdAnswer(field, {
+    queueAnswer({
       question,
       answer,
       inputType: field.kind,
@@ -2337,6 +2364,13 @@
   function captureOn(field) {
     if (field.el.__zapplyWatched || field.el.__zapplyGroupWatched) return;
     field.el.__zapplyWatched = true;
+    try {
+      if (field.el.__zapplyCaptureBaseline === undefined) {
+        field.el.__zapplyCaptureBaseline = String(readValue(field) ?? "").trim();
+      }
+    } catch {
+      field.el.__zapplyCaptureBaseline = "";
+    }
     // The whole group answers one question, so no other member may be watched
     // separately — otherwise focusing a second radio queued the same answer
     // twice, once against each element's own bookkeeping.
@@ -2507,39 +2541,13 @@
   }
 
   /**
-   * Offer every answer now in the form for saving.
+   * Do not sweep the whole form into the pending queue after Autofill.
    *
-   * Capture used to record only what the applicant typed, on the reasoning that
-   * Zapply already knew everything else. But the queue is the review step before
-   * anything reaches the dashboard, and an answer is worth keeping whoever
-   * produced it — the profile, a saved answer, the model, or the applicant. A
-   * dropdown and a radio group are answers too, which is why this walks the
-   * fields rather than listening for typing.
-   *
-   * Identity and contact details are still left out: a name or a phone number is
-   * profile data, not an answer to a question, and banking it would mean the
-   * next form fills it from a stale copy. Empty fields queue nothing, because
-   * there is no answer yet to save.
+   * Answers enter the queue only through trusted user edits handled by
+   * captureOn()/recordAnswer(). This is deliberately not called from run(),
+   * because doing so would turn every profile/saved-answer/AI value written by
+   * Zapply into a pending Saved Answer.
    */
-  function queueAnswersFromForm() {
-    for (const field of state.allFields ?? []) {
-      try {
-        if (field.kind === "file") continue;
-        if (field.rule && PROFILE_OWNED_KEYS.has(field.rule.key)) continue;
-        if (!document.contains(field.el)) continue;
-
-        const answer = String(readValue(field) ?? "").trim();
-        if (!answer) continue;
-
-        // Already saved with exactly this answer — re-queueing it would just be
-        // noise in a list meant for reviewing what changed.
-        const saved = findSavedAnswer(field);
-        if (saved?.exact && String(saved.answer).trim() === answer) continue;
-
-        recordAnswer(field, { userDriven: true });
-      } catch {}
-    }
-  }
 
   /**
    * Attach the capture listeners without filling anything.
