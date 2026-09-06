@@ -189,6 +189,25 @@
   ]);
 
   /**
+   * Keys that appear more than once inside a *single* row, so they can never
+   * mark where one row ends and the next begins.
+   *
+   * One job has two dates, and on Workday each of those is two more boxes —
+   * `MM` and `YYYY`. The row finder picks the repeated key with the most
+   * occurrences when no Company or Title is available, so on a form with one
+   * job it chose the date parts, read the four date boxes as four separate
+   * jobs, and asked the profile for jobs 2, 3 and 4. There are none, so `To`
+   * was planned as blank and left blank — a required field the applicant then
+   * had to fill in by hand on every Workday application.
+   */
+  const MULTI_PER_ROW_KEYS = new Set([
+    "experienceStartDate", "experienceEndDate", "experienceDatePart",
+    "experienceStartMonth", "experienceStartYear", "experienceEndMonth", "experienceEndYear",
+    "graduationDate", "educationDatePart",
+    "educationStartMonth", "educationStartYear", "educationEndMonth", "educationEndYear",
+  ]);
+
+  /**
    * Works out which repeated block each field belongs to.
    *
    * A numbered section heading is authoritative when the page provides one
@@ -213,7 +232,8 @@
     family.forEach((f) => counts.set(f.rule.key, (counts.get(f.rule.key) || 0) + 1));
     const anchorKey =
       anchorPreference.find((k) => (counts.get(k) || 0) > 1) ||
-      [...counts.entries()].sort((a, b) => b[1] - a[1]).find(([, n]) => n > 1)?.[0];
+      [...counts.entries()].sort((a, b) => b[1] - a[1])
+        .find(([key, n]) => n > 1 && !MULTI_PER_ROW_KEYS.has(key))?.[0];
 
     let anchored = false;
     if (anchorKey) {
@@ -221,9 +241,10 @@
       const rows = M.rowsFromAnchors(anchors);
       if (rows.length >= 2) {
         anchored = true;
+        const numbering = rowNumbering(rows, family);
         family.forEach((field) => {
           const i = rows.findIndex((row) => row.contains(field.el));
-          if (i >= 0) field.index = i;
+          if (i >= 0) field.index = numbering[i];
         });
       }
     }
@@ -260,6 +281,45 @@
     // Truly isolated fields have no row context; only then is index 0 safe.
     unresolved.forEach((f) => { if (!Number.isInteger(f.index)) f.index = 0; });
     reconcileRows(family);
+  }
+
+  /**
+   * Which entry of the profile each row stands for.
+   *
+   * Normally that is simply the row's position on the page. But a page can
+   * carry two separate repeated families — "Work Experience 1/2" followed by
+   * "Professional Experience (1)/(2)" — and counting straight through them made
+   * the first row of the second family the *third* job. The profile has two, so
+   * the lookup returned nothing and every box in that section, dates included,
+   * was left blank.
+   *
+   * Rows are grouped by the wording of the heading above them, ignoring its
+   * number, and counted within that group. A page with one heading and several
+   * cloned rows underneath has a single group, so it is unaffected.
+   */
+  function rowNumbering(rows, family) {
+    const positional = rows.map((_, i) => i);
+
+    const stemOf = (row) => {
+      const inside = family.find((f) => row.contains(f.el));
+      if (!inside) return "";
+      let title = "";
+      try { title = M.sectionContext?.(inside.el)?.title || ""; } catch { return ""; }
+      // "Professional Experience (2)" and "Professional Experience (1)" are the
+      // same section; the number is what tells the rows apart, not the family.
+      return title.toLowerCase().replace(/[^a-z]+/g, " ").trim();
+    };
+
+    const stems = rows.map(stemOf);
+    if (stems.some((s) => !s)) return positional;
+    if (new Set(stems).size < 2) return positional;
+
+    const seen = new Map();
+    return stems.map((stem) => {
+      const n = seen.get(stem) ?? 0;
+      seen.set(stem, n + 1);
+      return n;
+    });
   }
 
   /**
@@ -897,7 +957,7 @@
      * applicant has to delete by hand, so the ceiling is now low and progress is
      * verified after every click.
      */
-    const MAX_ADDED_ROWS = { experience: 25, education: 10 };
+    const MAX_ADDED_ROWS = { experience: 5, education: 3 };
 
     const answerableCount = () => {
       try { return document.querySelectorAll(ANSWERABLE_PROBE).length; } catch { return 0; }
@@ -1831,6 +1891,11 @@
         }
 
         result.skipped = authPage;
+        // Reported under its own name too. `skipped` is what the popup reads
+        // and is kept as-is, but "skipped" says nothing about *which* step this
+        // was, so anything else asking has to string-match a field named for a
+        // different question.
+        result.authPage = authPage;
         result.detected = 0;
       }
 
@@ -2393,6 +2458,19 @@
     if (field.kind === "radio" || field.kind === "checkbox") {
       let members = [el];
       try { members = groupMembersOf(el); } catch {}
+
+      /**
+       * A lone checkbox is its own question.
+       *
+       * "I agree to the terms and conditions" is what the box asks, not one of
+       * several answers to something else. Treating its label as an option
+       * disqualified it from being the question, so the search fell through to
+       * whatever heading happened to be above it — an edit to the consent box
+       * was banked under "Work Experience 2". A group of one offers no choice
+       * to compare against.
+       */
+      if (field.kind === "checkbox" && members.length <= 1) return new Set();
+
       for (const member of members) {
         try {
           add(M.radioOptionText?.(member));
@@ -2544,46 +2622,7 @@
    * group is saved under the question it asks rather than under the answer that
    * was picked.
    */
-  /**
-   * Stable human-readable question for pending edits. Some Workday controls
-   * expose only `From`, `To`, `Month`, or `Year`; using the section heading alone
-   * makes several pending entries look identical and can cause the wrong saved
-   * answer to be reused. Add the field's semantic role and row number when the
-   * normal question resolver is too generic.
-   */
-  function pendingQuestion(field) {
-    const base = primaryQuestion(field);
-    const key = field?.rule?.key;
-    const index = Number.isInteger(field?.index) ? field.index + 1 : null;
-    const work = {
-      currentCompany: "Company", currentTitle: "Job Title", experienceLocation: "Location",
-      responsibilities: "Role Description", experienceStartDate: "Start Date",
-      experienceEndDate: "End Date", experienceStartMonth: "Start Date Month",
-      experienceStartYear: "Start Date Year", experienceEndMonth: "End Date Month",
-      experienceEndYear: "End Date Year", experienceDatePart: "Work Experience Date",
-      currentJob: "I currently work here", employmentType: "Employment Type",
-      experienceLocationType: "Location Type",
-    };
-    const education = {
-      school: "School or University", degree: "Degree", fieldOfStudy: "Field of Study",
-      educationLocation: "Education Location", graduationDate: "Graduation Date",
-      educationDatePart: "Education Date", educationStartMonth: "Education Start Month",
-      educationStartYear: "Education Start Year", educationEndMonth: "Education End Month",
-      educationEndYear: "Education End Year",
-    };
-    const label = work[key] || education[key];
-    if (!label) return base;
-    const prefix = work[key] ? "Work Experience" : "Education";
-    const contextual = `${prefix}${index ? ` ${index}` : ""} — ${label}`;
-    // Keep a real question when the form supplied one; only replace weak
-    // section/one-word labels such as `Work Experience 1` or `From`.
-    if (!base || base.length < 8 || /^(work experience|education)(?:\s+\d+)?$/i.test(base) || /^(from|to|month|year|day)$/i.test(base)) {
-      return contextual;
-    }
-    return base;
-  }
-
-  function primaryQuestion(field) {
+  function primaryQuestion(field, { floor = 5 } = {}) {
     const el = field?.el;
     const parts = String(field?.label ?? "").split("|").map((x) => x.trim()).filter(Boolean);
     const options = optionTextsForField(field);
@@ -2591,7 +2630,7 @@
 
     const acceptable = (value) => {
       const text = String(value ?? "").trim().replace(/\s+/g, " ");
-      if (text.length < 5 || text.length > 300) return "";
+      if (text.length < floor || text.length > 300) return "";
       if (options.has(answerKey(text))) return "";
       if (ANSWER_LIKE_RE.test(text)) return "";
       if (looksMachineGenerated(text)) return "";
@@ -2655,6 +2694,71 @@
       if (text) return text;
     }
     return "";
+  }
+
+  /**
+   * Which repeated block this control sits in, spelled out for a person.
+   *
+   * The pending list is keyed by the question text, all the way through to
+   * extension storage. A form with two Work Experience rows asks "Company"
+   * twice, so correcting both employers produced two entries under one key and
+   * the second silently replaced the first — the applicant made two edits and
+   * the popup offered them one. The row is part of what makes those two
+   * questions different, so it belongs in the question.
+   *
+   * The number is written outside any brackets on purpose: the background's
+   * key normaliser strips bracketed text, so "Professional Experience (1)" and
+   * "(2)" would collapse back to the same key.
+   */
+  function sectionQualifier(field) {
+    /**
+     * Only a repeated history row is qualified.
+     *
+     * A qualified question does not travel — "Company — Work Experience 2"
+     * matches nothing on the next application, which is exactly right for a
+     * positional row and exactly wrong for "What is your notice period?". So
+     * this is limited to the two families that actually repeat; anything else
+     * keeps its plain question and stays reusable. Two unrelated boxes that
+     * still land on the same wording are separated by `uncontestedQuestion`.
+     */
+    const key = field?.rule?.key;
+    if (!key || !(EXPERIENCE_KEYS.has(key) || EDUCATION_KEYS.has(key))) return "";
+
+    let title = "";
+    let index = null;
+    try {
+      const section = M.sectionContext?.(field?.el);
+      title = String(section?.title ?? "").trim();
+      index = section?.index;
+    } catch {}
+
+    const row = Number.isInteger(field?.index) ? field.index : index;
+    if (!title) return Number.isInteger(row) && row > 0 ? `row ${row + 1}` : "";
+
+    // "Work Experience 2" and "Professional Experience (2)" both reduce to the
+    // heading's wording plus a bare number.
+    const stem = title.replace(/[([{#\-–—:]*\s*\d+\s*(?:of|\/)?\s*\d*\s*[)\]}]*\s*$/, "").trim();
+    if (!Number.isInteger(row)) return stem || title;
+    return `${stem || title} ${row + 1}`;
+  }
+
+  /**
+   * The question a manual edit is filed under.
+   *
+   * Separate from `primaryQuestion` because that one is also the lookup key for
+   * replaying a saved answer onto the next application, and a row-qualified
+   * question deliberately does not travel: "Company — Work Experience 2" means
+   * nothing on a different form. What it does do is keep two edits on *this*
+   * page apart, and give a two-letter label like "To" enough text to survive
+   * the length floor instead of being dropped without trace.
+   */
+  function capturedQuestion(field) {
+    const qualifier = sectionQualifier(field);
+    const base = primaryQuestion(field, { floor: qualifier ? 2 : 5 });
+    if (!base) return "";
+    if (!qualifier) return base;
+    if (base.toLowerCase().includes(qualifier.toLowerCase())) return base;
+    return `${base} \u2014 ${qualifier}`;
   }
 
   /** Every control that answers the same question as this one. */
@@ -2722,6 +2826,28 @@
    * explicitly saved. Nothing reaches Saved Answers without a click.
    */
   const pendingSave = new Map();   // question -> { entry, field }
+
+  /**
+   * Two controls, two entries — always.
+   *
+   * The Map and the storage behind it are both keyed by the question, and
+   * `sectionQualifier` cannot always tell two boxes apart: Workday's `From` and
+   * `To` each render a segment labelled only "Month", inside the same row. When
+   * that happens the second edit used to overwrite the first and one of the
+   * applicant's corrections simply vanished from the list. A numeric suffix is
+   * added instead, so nothing is ever silently lost. Brackets are avoided
+   * because the background's key normaliser strips them.
+   */
+  function uncontestedQuestion(field, question) {
+    const held = pendingSave.get(question);
+    if (!held || held.field?.el === field?.el) return question;
+    for (let n = 2; n <= 20; n++) {
+      const candidate = `${question} \u2014 ${n}`;
+      const taken = pendingSave.get(candidate);
+      if (!taken || taken.field?.el === field?.el) return candidate;
+    }
+    return question;
+  }
 
   function holdAnswer(field, entry) {
     pendingSave.set(entry.question, { entry, field });
@@ -2905,6 +3031,42 @@
     return options.every((option) => ANSWER_LIKE_RE.test(option));
   }
 
+  /**
+   * Answers that belong to the profile and must never reach Saved Answers.
+   *
+   * Everything else an applicant edits is fair game — a corrected employer, a
+   * date, a dropdown, a radio group — and is held for review. These are not.
+   * A name or an email address is edited in the profile, and banking one
+   * against a question would both put it on the next application under a
+   * question it does not answer and copy personal details into a reusable
+   * store the applicant never asked to keep them in.
+   *
+   * Deliberately narrower than the old `if (field.rule) return`, which excluded
+   * every field a rule had matched and is what made corrections to work history
+   * and dropdown answers vanish from the pending list.
+   */
+  const NEVER_BANKED_KEYS = new Set([
+    "firstName", "lastName", "middleName", "preferredName", "fullName", "signature",
+    "namePrefix", "nameSuffix", "dateOfBirth", "email", "emailConfirm",
+    "phone", "phoneCountryCode", "phoneType",
+    "address", "addressLine2", "city", "state", "zip",
+    "linkedin", "github", "portfolio", "twitter",
+    "resume", "coverLetter",
+  ]);
+
+  const IDENTITY_LABEL_RE =
+    /\b(e-?mail|first\s*name|last\s*name|middle\s*name|full\s*name|given\s*name|family\s*name|surname|date\s*of\s*birth|social\s*security|national\s*id|address\s*line|postal\s*code|zip\s*code)\b/i;
+
+  function belongsToProfile(field) {
+    const key = field?.rule?.key;
+    if (key && NEVER_BANKED_KEYS.has(key)) return true;
+    // A generic yes/no group cannot be a name box however its wording reads, so
+    // the label test is skipped for one — that mix-up is what used to refuse
+    // demographic answers whose question happened to contain a watched word.
+    if (isGenericChoiceGroup(field)) return false;
+    return IDENTITY_LABEL_RE.test(String(field?.label ?? ""));
+  }
+
   function recordAnswer(field, { userDriven }) {
     const el = field.el;
     if (!document.contains(el)) return false;
@@ -2930,11 +3092,7 @@
      * in the profile; the check belongs on every path into the queue, not on
      * one of them.
      */
-    // A profile-owned field is still capturable after the applicant manually
-    // changes it. Provenance is enforced by __zapplyUserEdited / baseline, so
-    // extension writes never enter this path, while an explicit edit to a
-    // company, date, dropdown, radio, checkbox, contact field, etc. does.
-
+    if (belongsToProfile(field)) return false;
 
     const answer = String(readValue(field) ?? "").trim();
     if (!answer) return false;
@@ -2985,8 +3143,8 @@
       if (!anyTicked) return false;
     }
 
-    const question = pendingQuestion(field);
-    if (question.length < 5 || question.length > 300) return false;
+    const question = capturedQuestion(field);
+    if (!question || question.length > 300) return false;
 
     el.__zapplyLastCaptured = answer;
     if (!worthSaving(field, answer)) return false;
@@ -3021,7 +3179,7 @@
 
     clearProgrammaticAnswer(field, answer);
     holdAnswer(field, {
-      question,
+      question: uncontestedQuestion(field, question),
       answer,
       // The control the answer came from, so the popup and the dashboard can
       // both say whether this was a dropdown, a radio group or a text box.
@@ -3059,7 +3217,29 @@
    * only choices were to bank every dropdown or to bank none of them.
    */
   let lastHumanAt = 0;
-  const noteHuman = (event) => { if (event?.isTrusted) lastHumanAt = Date.now(); };
+
+  /**
+   * `isTrusted` is not by itself proof of a person.
+   *
+   * Text is written with `execCommand("insertText")`, which is what gets a
+   * value into Workday's own model — and the *user agent* dispatches the
+   * resulting `beforeinput` and `input`, so the browser marks them trusted.
+   * Zapply's own fill therefore announced that a human was at the keyboard.
+   * When Workday then hydrated and wiped First and Last Name 400ms later, the
+   * sweep read the wipe as the applicant clearing the fields, marked them
+   * user-owned, and the settle pass refused to restore them — leaving "The
+   * field First Name is required" at Next with nothing in the box.
+   *
+   * An event arriving on a control Zapply is mid-write on is Zapply's.
+   */
+  const noteHuman = (event) => {
+    if (!event?.isTrusted) return;
+    try {
+      const target = event.target;
+      if (target && target.nodeType === 1 && isGroupProgrammatic(target)) return;
+    } catch {}
+    lastHumanAt = Date.now();
+  };
   const HUMAN_WINDOW_MS = 8000;
 
   /** What this control held the last time we looked, so a change is detectable. */

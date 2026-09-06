@@ -75,9 +75,27 @@ async function boot({ storage = {}, savedAnswers = [] } = {}) {
     // than the number it offered, so the stub has to answer honestly or the
     // count check is testing nothing.
     const body = (() => { try { return JSON.parse(options.body || "{}"); } catch { return {}; } })();
+    // `/api/extension/sync` reports *which* answers it wrote, not just how
+    // many, and the worker clears only those. The stub returned the count
+    // alone, so nothing was ever confirmed and the queue looked stuck — a
+    // property of the stub, not of the worker.
+    const normalize = (q) => String(q ?? "")
+      .toLowerCase()
+      .replace(/\(.*?\)/g, " ")
+      .replace(/[^a-z0-9\s]/g, " ")
+      .replace(/\b(please|kindly|the|a|an|your|you|us|our|this|that|is|are|do|does|did|of|to|for|in|on|at|we|and|or|if|will|would|can|could|may)\b/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 180);
+    const responses = body.responses ?? [];
     return {
       ok: true, status: 200,
-      json: async () => ({ data: { responsesSaved: (body.responses ?? []).length } }),
+      json: async () => ({
+        data: {
+          responsesSaved: responses.length,
+          savedKeys: responses.map((r) => normalize(r?.question)),
+        },
+      }),
     };
   };
 

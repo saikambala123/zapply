@@ -132,15 +132,9 @@
     const parsed = parseProfileDate(raw);
     if (!parsed) return null;
     if (part === "year") return parsed.year;
-    // Defensive January when a legacy profile stores year-only (e.g. "2022").
-    // Workday month controls cannot be left blank; normalized YYYY-MM profiles
-    // already have a real month and are unchanged.
-    if (part === "month") return parsed.month || (parsed.year ? "01" : null);
+    if (part === "month") return parsed.month;
     if (part === "day") return parsed.day || "1";
-    if (part === "monthName") {
-      const mm = parsed.month || (parsed.year ? "01" : null);
-      return mm ? MONTH_NAMES[Number(mm) - 1] || null : null;
-    }
+    if (part === "monthName") return parsed.month ? MONTH_NAMES[Number(parsed.month) - 1] || null : null;
     return null;
   };
 
@@ -181,14 +175,21 @@
       if (part) break;
     }
     if (!part) {
-      const machine = `${el?.getAttribute?.("name") || ""} ${el?.id || ""} ${el?.getAttribute?.("placeholder") || ""} ${el?.getAttribute?.("aria-label") || ""}`;
+      const machine = `${el?.getAttribute?.("name") || ""} ${el?.id || ""} ${el?.getAttribute?.("placeholder") || ""}`;
       part = partOf(machine.replace(/[_\-.]+/g, " "));
     }
     if (!part) {
-      const joined = segments.join(" ").toLowerCase();
-      const hasMonth = /\bmonth\b|\bmm\b/.test(joined);
-      const hasYear = /\byear\b|\byyyy\b/.test(joined);
-      const hasDay = /\bday\b|\bdd\b/.test(joined);
+      // The element's own attributes count as a label source. Workday names its
+      // segments `dateSectionMonth-input` and `dateSectionYear-input`, which no
+      // whole-word test matches but which say plainly which box this is.
+      const own = [
+        el?.getAttribute?.("data-automation-id"), el?.getAttribute?.("aria-label"),
+        el?.getAttribute?.("aria-valuetext"), el?.getAttribute?.("placeholder"),
+      ].filter(Boolean).join(" ");
+      const joined = `${segments.join(" ")} ${own}`.toLowerCase();
+      const hasMonth = /\bmonth\b|\bmm\b|datesectionmonth/.test(joined);
+      const hasYear = /\byear\b|\byyyy\b|datesectionyear/.test(joined);
+      const hasDay = /\bday\b|\bdd\b|datesectionday/.test(joined);
       if (hasMonth && !hasYear && !hasDay) part = "month";
       else if (hasYear && !hasMonth && !hasDay) part = "year";
       else if (hasDay && !hasMonth && !hasYear) part = "day";
@@ -203,37 +204,80 @@
       if (/\b(start|from|begin|began|joined|joining|hire[d]?)\b/.test(s)) { which = "start"; break; }
     }
 
-    // Workday often puts the start/end wording on a parent label while the
-    // individual Month/Day/Year inputs expose only their own machine name or
-    // aria-label. If the derived label contains only "Month" or "Year", use
-    // the nearest field wrapper as a second source. Without this, both the
-    // Start Date and End Date segments could resolve to the startDate profile
-    // value, leaving Workday with a mismatched range or an "Invalid Date"
-    // validation error on the end date.
-    if (!which) {
-      const nearby = [
-        el?.closest?.('[data-automation-id*="dateSection" i]'),
-        el?.closest?.('[data-automation-id*="dateInput" i]'),
-        el?.closest?.('[data-automation-id*="datePicker" i]'),
-        el?.closest?.('[role="group"]'),
-        el?.parentElement,
-      ].filter(Boolean);
-      const wrapperText = nearby
-        .map((node) => `${node.getAttribute?.("aria-label") || ""} ${node.getAttribute?.("data-automation-id") || ""} ${node.textContent || ""}`)
-        .join(" ")
-        .toLowerCase();
-      if (/\b(end|to|thru|through|until|left|completion|graduat|expected)\b/.test(wrapperText)) which = "end";
-      else if (/\b(start|from|begin|began|joined|joining|hire[d]?)\b/.test(wrapperText)) which = "start";
-    }
-
-    // Machine identifiers are useful when the visible label is generic.
-    if (!which) {
-      const machine = `${el?.getAttribute?.("name") || ""} ${el?.id || ""} ${el?.getAttribute?.("data-automation-id") || ""} ${el?.getAttribute?.("aria-label") || ""}`.toLowerCase();
-      if (/(end|to|until|completion|graduat)/.test(machine)) which = "end";
-      else if (/(start|from|begin|joined|hire)/.test(machine)) which = "start";
-    }
+    if (!which) which = dateWhichFromDom(el);
 
     return { part, which };
+  };
+
+  /**
+   * Start or end, read from the markup around the box.
+   *
+   * A Workday date segment is labelled only "Month" or "Year"; the word that
+   * distinguishes the two dates — `From` and `To` — lives on the group that
+   * wraps them, reached through `aria-labelledby`, or in the wrapper's own
+   * `data-automation-id` (`formField-startDate`). Without this the To boxes
+   * fell back to the start date and every job appeared to end in the month it
+   * began.
+   */
+  const DATE_START_RE = /\b(start|from|begin|began|joined|joining|hire[d]?)\b|startdate|fromdate/i;
+  const DATE_END_RE = /\b(end|to|thru|through|until|left|completion|graduat|expected)\b|enddate|todate/i;
+
+  const dateWhichFromDom = (el) => {
+    if (!el || typeof el.getAttribute !== "function") return null;
+
+    const spokenName = (node) => {
+      let text = "";
+      try {
+        const ids = String(node.getAttribute?.("aria-labelledby") || "").split(/\s+/).filter(Boolean);
+        for (const id of ids) text += " " + (document.getElementById(id)?.textContent || "");
+        text += " " + (node.getAttribute?.("aria-label") || "");
+      } catch {}
+      return text;
+    };
+
+    let node = el;
+    for (let depth = 0; node && depth < 6; depth++, node = node.parentElement) {
+      const machine = `${node.getAttribute?.("data-automation-id") || ""} ${node.id || ""} ${node.getAttribute?.("name") || ""}`
+        .replace(/[_\-.]+/g, " ");
+      const text = `${machine} ${spokenName(node)}`;
+      const start = DATE_START_RE.test(text);
+      const end = DATE_END_RE.test(text);
+      // Only an unambiguous ancestor decides it. A wrapper mentioning both
+      // dates says nothing about which one this box belongs to.
+      if (end && !start) return "end";
+      if (start && !end) return "start";
+    }
+    return null;
+  };
+
+  /**
+   * Does this box want the month as a number rather than as a word?
+   *
+   * Workday draws `From *` as two spinbuttons, `MM` and `YYYY`, each holding a
+   * couple of characters. They are `<input type="text">`, so the old test —
+   * number input or a select listing numbers — said no and the month was
+   * written as "March". The box refused it, the month stayed empty, and the
+   * page reported "Invalid Date: /2022" beside a year that had landed
+   * perfectly. Anything that announces itself as a two-character or
+   * numerically-bounded date segment gets digits.
+   */
+  const wantsNumericDatePart = (el) => {
+    if (!el || el.tagName === "SELECT") return false;
+    const type = String(el.type || "").toLowerCase();
+    if (type === "number") return true;
+    if (el.getAttribute?.("role") === "spinbutton") return true;
+
+    const cap = Number(el.getAttribute?.("maxlength") ?? 0);
+    if (cap > 0 && cap <= 2) return true;
+
+    const max = Number(el.getAttribute?.("aria-valuemax") ?? 0);
+    if (max > 0 && max <= 31) return true;
+
+    const hint = [
+      el.getAttribute?.("data-automation-id"), el.getAttribute?.("placeholder"),
+      el.getAttribute?.("aria-valuetext"), el.getAttribute?.("aria-label"),
+    ].filter(Boolean).join(" ");
+    return /datesection|\bmm\b|\bdd\b/i.test(hint);
   };
 
   const valueForSlot = (raw, part, el) => {
@@ -242,7 +286,7 @@
     if (part === "day") return datePart(raw, "day");
     if (part === "month") {
       const type = (el?.type || "").toLowerCase();
-      if (type === "number") return datePart(raw, "month");
+      if (type === "number" || wantsNumericDatePart(el)) return datePart(raw, "month");
       if (el?.tagName === "SELECT") {
         // Pick the wording this particular select actually uses.
         const texts = Array.from(el.options || []).map((o) => (o.textContent || "").trim());
@@ -281,26 +325,11 @@
 
     const hint = [el?.getAttribute?.("placeholder"), el?.getAttribute?.("aria-label"), el?.getAttribute?.("data-automation-id"), el?.getAttribute?.("name"), el?.id].filter(Boolean).join(" ").toLowerCase();
     if (/\byear\b|yyyy|^yy$/.test(hint) && !/month|mm/.test(hint)) return parsed.year;
-    const yyyy = String(parsed.year || "").replace(/\D/g, "").slice(0, 4);
-    const mm = parsed.month || "01";
-    if (yyyy.length !== 4) return null;
-
-    if (/mm\s*[/-]\s*yyyy|month\s*\/?\s*year/.test(hint)) {
-      // Workday's masked MM/YYYY control cannot represent a year-only value.
-      // When the profile contains only `2022`, use January as the deterministic
-      // month rather than writing `2022`, which the mask renders as `/2022` and
-      // then rejects as `Invalid Date`. Normalized profiles normally already
-      // contain YYYY-MM, so this is only a defensive fallback.
-      // Always emit a full 4-digit year — a 2-digit year becomes "01/0018".
-      return `${mm}/${yyyy}`;
-    }
-    if (/yyyy\s*[-/]\s*mm|year\s*[-/]\s*month/.test(hint)) return `${yyyy}-${mm}`;
-    if (/mm\s*[/-]\s*dd\s*[/-]\s*yyyy|month.*day.*year/.test(hint)) {
-      return parsed.day ? `${mm}/${parsed.day}/${yyyy}` : null;
-    }
-    // From / To / Start / End on Workday experience blocks — same MM/YYYY shape.
-    if (/date|from|to|start|end|employment|experience/.test(hint)) return `${mm}/${yyyy}`;
-    return parsed.month ? `${yyyy}-${mm}` : yyyy;
+    if (/mm\s*[/-]\s*yyyy|month\s*\/?\s*year/.test(hint)) return parsed.month ? `${parsed.month}/${parsed.year}` : null;
+    if (/yyyy\s*[-/]\s*mm|year\s*[-/]\s*month/.test(hint)) return parsed.month ? `${parsed.year}-${parsed.month}` : parsed.year;
+    if (/mm\s*[/-]\s*dd\s*[/-]\s*yyyy|month.*day.*year/.test(hint)) return parsed.month && parsed.day ? `${parsed.month}/${parsed.day}/${parsed.year}` : null;
+    if (/date|from|to|start|end|employment|experience/.test(hint)) return parsed.month ? `${parsed.month}/${parsed.year}` : null;
+    return parsed.month ? `${parsed.year}-${parsed.month}` : parsed.year;
   };
 
   const dateMonth = (raw) => datePart(raw, "monthName") || datePart(raw, "month");
@@ -733,7 +762,12 @@
       // Mr./Ms./Dr. Left alone rather than guessed: it is frequently a proxy
       // for gender, and the applicant has not told us.
       match: [/^title$/i, /\bname\s*(title|prefix)\b/i, /^(prefix|salutation|honorific)$/i],
-      deny: [THIRD_PARTY, /job|position|role|current|desired|work|employment|degree|study/i],
+      // A bare "Title" box inside an employment block is a job title, never
+      // Mr./Ms. iCIMS labels it exactly "Title" and puts "Professional
+      // Experience (1)" in the heading, and matching the field's own label
+      // outscores currentTitle matching the two together — so the applicant's
+      // job title was dropped and an honorific was offered instead.
+      deny: [THIRD_PARTY, /job|position|role|current|desired|work|employment|experience|employer|company|organi[sz]ation|degree|study/i],
       identity: true,
       type: ["text", "select", "radio"],
       value: (p) => P(p).namePrefix || null,
@@ -1054,11 +1088,7 @@
       ],
       type: ["text", "date", "month"],
       profileOnly: true,
-      value: (p, el, _label, index) => {
-        const job = jobAt(p, index);
-        if (!job || !job.startDate) return null;
-        return dateForField(job.startDate, el);
-      },
+      value: (p, el, _label, index) => dateForField(latestJob(p, index).startDate, el),
     },
     {
       key: "experienceEndDate",
@@ -1069,55 +1099,7 @@
       ],
       type: ["text", "date", "month"],
       profileOnly: true,
-      value: (p, el, _label, index) => {
-        const job = jobAt(p, index);
-        if (!job) return null;
-        // Current roles have no end date — leave the field empty so Workday
-        // does not show a fabricated or previous end date.
-        if (job.current || !job.endDate) return null;
-        return dateForField(job.endDate, el);
-      },
-    },
-    /* Workday frequently labels the two masked MM/YYYY boxes simply "From *"
-       and "To *". These rules bind them to the correct profile start/end dates
-       for the row, and leave "To" empty when the role is still current. */
-    {
-      key: "experienceStartDate",
-      weight: 15,
-      match: [
-        /^(from|start)\b/i,
-        /\bfrom\s*\*?\s*$/i,
-        /\bstart\s*date\b/i,
-      ],
-      deny: [/education|school|college|university|degree|graduat|birth|dob|available|notice|eligibility/i],
-      type: ["text", "date", "month"],
-      profileOnly: true,
-      // Require work-experience section context so a lone "From" elsewhere is ignored.
-      require: /work\s*experience|employment|work\s*history|job\s*history|professional\s*experience|employer/i,
-      value: (p, el, _label, index) => {
-        const job = jobAt(p, index);
-        if (!job || !job.startDate) return null;
-        return dateForField(job.startDate, el);
-      },
-    },
-    {
-      key: "experienceEndDate",
-      weight: 15,
-      match: [
-        /^(to|end)\b/i,
-        /\bto\s*\*?\s*$/i,
-        /\bend\s*date\b/i,
-      ],
-      deny: [/education|school|college|university|degree|graduat|birth|dob|available|notice|eligibility/i],
-      type: ["text", "date", "month"],
-      profileOnly: true,
-      require: /work\s*experience|employment|work\s*history|job\s*history|professional\s*experience|employer/i,
-      value: (p, el, _label, index) => {
-        const job = jobAt(p, index);
-        if (!job) return null;
-        if (job.current || !job.endDate) return null;
-        return dateForField(job.endDate, el);
-      },
+      value: (p, el, _label, index) => dateForField(latestJob(p, index).endDate, el),
     },
     /* Split Month / Day / Year controls inside a work-experience block.
        Highest weight in the family so a bare "Year" box can never fall through
@@ -1151,11 +1133,7 @@
       deny: [/education|school|college|university/i],
       type: ["select", "text"],
       profileOnly: true,
-      value: (p, _el, _label, index) => {
-        const job = jobAt(p, index);
-        if (!job || !job.startDate) return null;
-        return dateMonth(job.startDate);
-      },
+      value: (p, _el, _label, index) => dateMonth(latestJob(p, index).startDate),
       options: MONTH_SYNONYMS,
     },
     {
@@ -1165,11 +1143,7 @@
       deny: [/education|school|college|university/i],
       type: ["select", "text"],
       profileOnly: true,
-      value: (p, _el, _label, index) => {
-        const job = jobAt(p, index);
-        if (!job || !job.startDate) return null;
-        return dateYear(job.startDate);
-      },
+      value: (p, _el, _label, index) => dateYear(latestJob(p, index).startDate),
     },
     {
       key: "experienceEndMonth",
@@ -1178,11 +1152,7 @@
       deny: [/education|school|college|university/i],
       type: ["select", "text"],
       profileOnly: true,
-      value: (p, _el, _label, index) => {
-        const job = jobAt(p, index);
-        if (!job || job.current || !job.endDate) return null;
-        return dateMonth(job.endDate);
-      },
+      value: (p, _el, _label, index) => dateMonth(latestJob(p, index).endDate),
       options: MONTH_SYNONYMS,
     },
     {
@@ -1192,34 +1162,16 @@
       deny: [/education|school|college|university/i],
       type: ["select", "text"],
       profileOnly: true,
-      value: (p, _el, _label, index) => {
-        const job = jobAt(p, index);
-        if (!job || job.current || !job.endDate) return null;
-        return dateYear(job.endDate);
-      },
+      value: (p, _el, _label, index) => dateYear(latestJob(p, index).endDate),
     },
     {
       key: "currentJob",
-      weight: 14,
-      match: [
-        /\bi\s*currently\s*work\s*here\b/i,
-        /\bcurrently\s*(work|employed)\s*(here|in\s*this\s*(role|position|job))?\b/i,
-        /\bcurrent\s*(job|role|position|employer)\b/i,
-        /\bthis\s*is\s*my\s*current\s*(job|role|position)\b/i,
-        /\bstill\s*(work|employed)\s*(here|at\s*this)?\b/i,
-      ],
-      deny: [/previous|past|former|education|school/i],
+      weight: 12,
+      match: [/\bcurrently\s*(work|employed)\b/i, /\bcurrent\s*(job|role|position)\b/i, /\bthis\s*is\s*my\s*current\s*(job|role)\b/i],
       type: ["checkbox", "radio", "select"],
       profileOnly: true,
-      // Only the profile row that is marked current gets "Yes". Every other
-      // work-experience row gets "No" so a single current role cannot tick
-      // "I currently work here" on multiple form blocks.
-      value: (p, _el, _label, index) => {
-        const job = jobAt(p, index);
-        if (!job) return "No";
-        return job.current ? "Yes" : "No";
-      },
-      options: { Yes: ["yes", "currently", "current", "true", "i currently work here"], No: ["no", "not current", "false"] },
+      value: (p, _el, _label, index) => latestJob(p, index).current ? "Yes" : "No",
+      options: { Yes: ["yes", "currently", "current", "true"], No: ["no", "not current", "false"] },
     },
     {
       key: "yearsExperience",

@@ -91,7 +91,15 @@ async function fill({ premium = false, aiAnswer = null } = {}) {
 
   check("job title is filled", (await v("w1t")) === "IAM/PAM Analyst", `got "${await v("w1t")}"`);
   check("company is filled", (await v("w1c")) === "Northern Trust Bank", `got "${await v("w1c")}"`);
-  check("work dates are filled", (await v("w1f")) === "2022-01" && (await v("w1to")) === "2024-06", `${await v("w1f")} → ${await v("w1to")}`);
+  /* The two date boxes carry placeholder="MM/YYYY", so MM/YYYY is what they take.
+   This used to assert the ISO spelling, which is what Workday rejects with
+   "Invalid Date" — the very failure the date work was about. The To box was
+   separately blank: From and To were being read as two different jobs. */
+check(
+  "work dates are filled",
+  (await v("w1f")) === "01/2022" && (await v("w1to")) === "06/2024",
+  `${await v("w1f")} → ${await v("w1to")}`
+);
   check("school is filled", (await v("e1s")) === "University of Texas", `got "${await v("e1s")}"`);
   check("degree is filled", (await v("e1d")) === "Masters", `got "${await v("e1d")}"`);
   check("field of study is filled", (await v("e1fld")) === "Computer Science", `got "${await v("e1fld")}"`);

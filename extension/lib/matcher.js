@@ -796,7 +796,7 @@
      * than four characters is a free-text field, not a date segment.
      */
     const looksLikeSegment = (node) => {
-      const cap = Number(node.getAttribute?.("maxlength") ?? node.maxLength ?? 0);
+      const cap = maxLengthOf(node);
       if (cap > 4) return false;
       const hint = `${node.getAttribute?.("data-automation-id") || ""} ${node.getAttribute?.("aria-label") || ""} ${node.getAttribute?.("placeholder") || ""} ${node.getAttribute?.("name") || ""} ${node.getAttribute?.("id") || ""}`;
       if (/datesection|\bmonth\b|\byear\b|\bday\b|\bmm\b|\byyyy\b|\bdd\b/i.test(hint)) return true;
@@ -813,7 +813,7 @@
       if (/month|\bmm\b/i.test(hint)) return "month";
       if (/year|\byyyy\b|\byy\b/i.test(hint)) return "year";
       if (/\bday\b|\bdd\b/i.test(hint)) return "day";
-      const cap = Number(node.getAttribute?.("maxlength") ?? node.maxLength ?? 0);
+      const cap = maxLengthOf(node);
       if (cap === 4) return "year";
       // No cap and no name: a segment whose upper bound is a four-digit number
       // is the year box.
@@ -843,200 +843,156 @@
     const raw = String(value ?? "").trim();
     if (!raw) return null;
 
-    const pad2 = (n) => String(n).padStart(2, "0");
-    // Always emit a 4-digit year. A 2-digit year written into Workday's
-    // MM/YYYY mask becomes "0018" (e.g. 01/0018) after zero-padding — the
-    // exact corruption reported on live Workday applications.
-    const year4 = (y) => {
-      const s = String(y ?? "").replace(/\D/g, "");
-      if (!s) return "";
-      let n = Number(s);
-      if (!Number.isFinite(n)) return "";
-      // "18", "0018", or any value under 100 must expand to a real 4-digit year.
-      // Zero-padding a short year into Workday produced the live "01/0018" bug.
-      if (n >= 0 && n <= 99) return String(n <= 40 ? 2000 + n : 1900 + n);
-      if (s.length >= 4) return s.slice(-4);
-      return String(n);
-    };
-
     let m = raw.match(/^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?$/);        // 2019-12-05
-    if (m) return { year: year4(m[1]), month: pad2(m[2]), day: m[3] ? pad2(m[3]) : "" };
+    if (m) return { year: m[1], month: m[2], day: m[3] ?? "" };
 
     m = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);                // 12/05/2019
-    if (m) return { month: pad2(m[1]), day: pad2(m[2]), year: year4(m[3]) };
+    if (m) return { month: m[1], day: m[2], year: m[3] };
 
-    m = raw.match(/^(\d{1,2})\/(\d{2,4})$/);                          // 12/2019 or 12/19
-    if (m) return { month: pad2(m[1]), year: year4(m[2]), day: "" };
+    m = raw.match(/^(\d{1,2})\/(\d{4})$/);                           // 12/2019
+    if (m) return { month: m[1], year: m[2], day: "" };
 
     m = raw.match(/^(\d{4})$/);                                      // 2019
-    if (m) return { year: year4(m[1]), month: "", day: "" };
+    if (m) return { year: m[1], month: "", day: "" };
 
-    m = raw.match(/^(\d{1,2})$/);                                    // 18 (ambiguous — treat as year only when 2-digit in range)
-    if (m && Number(m[1]) >= 0 && Number(m[1]) <= 99) return { year: year4(m[1]), month: "", day: "" };
+    /**
+     * A bare number is not a date, and `new Date` must never see one.
+     *
+     * `new Date("12")` is 1 December **2001**. A Workday month box is filled
+     * with "12" on its own, so the fallback below turned that into a whole
+     * date, and writing it across the widget replaced the year the applicant
+     * actually worked there with 2001. Anything this short is one segment's
+     * own answer and is handled by `setSegmentedDate`, not here.
+     */
+    if (/^\d{1,3}$/.test(raw)) return null;
 
     const parsed = new Date(raw);
     if (!Number.isNaN(parsed.getTime())) {
       return {
         year: String(parsed.getFullYear()),
-        month: pad2(parsed.getMonth() + 1),
-        day: pad2(parsed.getDate()),
+        month: String(parsed.getMonth() + 1),
+        day: String(parsed.getDate()),
       };
     }
     return null;
   }
 
   /**
-   * Workday also has a single masked Month/Year input. It looks like one box
-   * with a placeholder such as `MM/YYYY`, but the mask consumes digits one at
-   * a time. Writing `01/2022` as one synthetic value can make Workday retain
-   * only `/2022`, producing the exact `Invalid Date: /2022` shown on the
-   * application. Feed the six digits through the editing pipeline individually
-   * so the mask inserts its own slash and updates its internal model.
+   * How many characters this segment holds.
+   *
+   * `el.maxLength` is **-1** on an input with no `maxlength` attribute, and
+   * Workday's date spinbuttons carry none. The old reader took that -1 as the
+   * cap, so `cap === 4` was never true and every value was trimmed to its last
+   * two characters: a year of 2021 was written as "21", and the widget then
+   * reported an invalid date against a box the applicant could see was filled.
    */
-  function isMaskedMonthYearInput(el) {
-    if (!el || el.tagName !== "INPUT") return false;
-    const type = String(el.getAttribute?.("type") || el.type || "text").toLowerCase();
-    if (!["text", "tel", "number", "search"].includes(type)) return false;
-    const hint = [
-      el.getAttribute?.("placeholder"),
-      el.getAttribute?.("aria-label"),
-      el.getAttribute?.("data-automation-id"),
-      el.getAttribute?.("name"),
-      el.getAttribute?.("id"),
-      el.getAttribute?.("title"),
-    ].filter(Boolean).join(" ");
-    if (/(?:mm\s*[/-]\s*yyyy|month\s*[/-]\s*year|month.*year|dateSectionMonthYear|monthYear)/i.test(hint)) return true;
-    // Workday "From" / "To" experience date boxes often omit an MM/YYYY
-    // placeholder and only expose a calendar affordance. Treat short numeric
-    // inputs next to From/To/Start/End labels as masked month-year as well.
-    const labelHint = [
-      el.getAttribute?.("aria-label"),
-      el.labels && el.labels[0] ? el.labels[0].textContent : "",
-      el.closest?.("label")?.textContent,
-      el.parentElement?.textContent,
-    ].filter(Boolean).join(" ");
-    if (/\b(from|to|start\s*date|end\s*date)\b/i.test(labelHint) && !/\b(day|dd)\b/i.test(hint)) {
-      const max = Number(el.getAttribute?.("maxlength") ?? el.maxLength ?? 0);
-      if (!max || max <= 10) return true;
-    }
-    return false;
+  function segmentCap(node, kind) {
+    const declared = maxLengthOf(node);
+    if (declared > 0) return declared;
+    return kind === "year" ? 4 : 2;
   }
 
-  function setMaskedMonthYear(el, value) {
-    // Prefer the masked path whenever the value is clearly MM/YYYY or YYYY-MM,
-    // even if the control's placeholder did not advertise the mask. Bulk
-    // assignment of "01/2018" is what produced the live "01/0018" corruption.
-    const parts = dateParts(value);
-    const looksMonthYear = Boolean(parts?.year) && (
-      isMaskedMonthYearInput(el) ||
-      /^\d{1,2}\/\d{2,4}$/.test(String(value ?? "").trim()) ||
-      /^\d{4}-\d{1,2}$/.test(String(value ?? "").trim())
-    );
-    if (!looksMonthYear || !parts?.year) return false;
-    if (!isMaskedMonthYearInput(el) && !/^\d{1,2}\/\d{2,4}$/.test(String(value ?? "").trim()) && !/^\d{4}-\d{1,2}$/.test(String(value ?? "").trim())) {
-      return false;
-    }
-    // When the control is not clearly masked but the value is MM/YYYY, still
-    // use digit-by-digit only for Workday-like short inputs.
-    if (!isMaskedMonthYearInput(el)) {
-      const max = Number(el.getAttribute?.("maxlength") ?? el.maxLength ?? 0);
-      if (max && max > 10) return false;
-    }
-    const month = String(parts.month || "01").padStart(2, "0").slice(-2);
-    const year = String(parts.year).replace(/\D/g, "").slice(0, 4);
-    if (year.length !== 4) return false;
-    const digits = `${month}${year}`;
-    if (!/^\d{6}$/.test(digits)) return false;
+  /** Is this number a plausible answer for a month / day / year box? */
+  function fitsSegment(kind, digits) {
+    const n = Number(digits);
+    if (!Number.isFinite(n)) return false;
+    if (kind === "month") return digits.length <= 2 && n >= 1 && n <= 12;
+    if (kind === "day") return digits.length <= 2 && n >= 1 && n <= 31;
+    return digits.length === 4 || digits.length === 2;   // year, four- or two-digit
+  }
 
-    ensureVisible(el);
-    try { el.focus?.({ preventScroll: true }); } catch { try { el.focus?.(); } catch {} }
+  /**
+   * Type one number into one segment.
+   *
+   * `insertText` first, for the same reason `setTextValue` uses it: Workday
+   * only records what its own editing pipeline saw. Assignment is the fallback
+   * for widgets that refuse the command.
+   */
+  function writeSegment(seg, digits) {
+    const { node, kind } = seg;
+    const cap = segmentCap(node, kind);
+    const text = String(digits).replace(/\D+/g, "").padStart(kind === "year" ? 4 : 2, "0").slice(-cap);
+    if (!text) return false;
 
-    const setter = nativeSetter(el);
-    const put = (v) => { if (setter) setter.call(el, v); else el.value = v; };
-    const tracker = el._valueTracker;
+    const previous = String(node.value ?? "");
     try {
-      put("");
-      if (tracker && typeof tracker.setValue === "function") tracker.setValue("");
-      fire(el, "input", "change");
+      ensureVisible(node);
+      node.focus?.({ preventScroll: true });
+    } catch {}
 
-      // One digit at a time is intentional: Workday's mask advances from MM
-      // to YYYY only after it has received the second month digit.
-      for (const digit of digits) {
-        let inserted = false;
-        try { inserted = Boolean(document.execCommand?.("insertText", false, digit)); } catch {}
-        if (!inserted || !String(el.value ?? "").replace(/\D/g, "").endsWith(digits.slice(0, Math.min(digits.length, String(el.value ?? "").replace(/\D/g, "").length)))) {
-          const currentDigits = String(el.value ?? "").replace(/\D/g, "");
-          const nextDigits = (currentDigits + digit).slice(-6);
-          put(nextDigits.length > 2 ? `${nextDigits.slice(0, 2)}/${nextDigits.slice(2)}` : nextDigits);
-          if (tracker && typeof tracker.setValue === "function") tracker.setValue(currentDigits);
-          fire(el, "beforeinput", "input", "change");
-        }
+    let typed = false;
+    try {
+      node.setSelectionRange?.(0, previous.length);
+      if (!previous && typeof node.select === "function") node.select();
+      if (document.execCommand && document.execCommand("insertText", false, text)) {
+        typed = String(node.value ?? "") === text;
       }
-      const digitsNow = String(el.value ?? "").replace(/\D/g, "");
-      if (digitsNow === digits) {
-        try { el.blur?.(); } catch {}
-        fire(el, "blur", "focusout");
-        return true;
-      }
+    } catch {}
 
-      // A few Workday variants ignore execCommand but accept a final native
-      // assignment when the value is already in the mask's canonical shape.
-      // Always use the 4-digit year — never zero-pad a short year into 00XX.
-      put(`${month}/${year}`);
-      if (tracker && typeof tracker.setValue === "function") tracker.setValue("");
-      fire(el, "beforeinput", "input", "change", "blur");
-      const finalDigits = String(el.value ?? "").replace(/\D/g, "");
-      if (finalDigits === digits) return true;
-      // Last resort: clear and write canonical MM/YYYY as a single string.
-      put("");
-      fire(el, "input");
-      put(`${month}/${year}`);
-      if (tracker && typeof tracker.setValue === "function") tracker.setValue("");
-      fire(el, "beforeinput", "input", "change", "blur");
-      return String(el.value ?? "").replace(/\D/g, "") === digits;
-    } catch {
-      return false;
+    if (!typed) {
+      try {
+        const writer = nativeSetter(node);
+        const put = (v) => { if (writer) writer.call(node, v); else node.value = v; };
+        // Clear first: a segment that already holds "09" would otherwise end up
+        // with "0903" and clamp back to something nobody asked for.
+        if (previous) { put(""); fire(node, "input"); }
+        put(text);
+      } catch {}
     }
+
+    // React drops a change event that agrees with the value it last recorded on
+    // the node, so the record is made stale before the events go out.
+    try {
+      const tracker = node._valueTracker;
+      if (tracker && typeof tracker.setValue === "function") tracker.setValue(text === "" ? "x" : "");
+    } catch {}
+    fire(node, "keydown", "beforeinput", "input", "keyup", "change");
+
+    return String(node.value ?? "") === text;
   }
 
   function setSegmentedDate(el, value) {
     const segs = dateSegments(el);
     if (!segs) return false;
-    const parts = dateParts(value);
+
+    const raw = String(value ?? "").trim();
+    if (!raw) return false;
+
+    /**
+     * One number belongs to one box.
+     *
+     * Workday collects `From *` as two separate controls, so the scan plans the
+     * month box and the year box independently and hands each its own number.
+     * Spreading that number across the whole widget is what produced
+     * "Invalid Date: /2021": the year write also blanked the month beside it,
+     * and a month write would have overwritten the year with whatever
+     * `new Date("12")` invented.
+     */
+    const mine = segs.find((s) => s.node === el);
+    if (mine && /^\d{1,4}$/.test(raw)) {
+      if (!fitsSegment(mine.kind, raw)) return false;
+      const ok = writeSegment(mine, raw);
+      // Only this segment is blurred. Blurring the whole widget here made
+      // Workday validate a date that was still half-written.
+      try { el.blur?.(); } catch {}
+      fire(el, "blur");
+      return ok;
+    }
+
+    const parts = dateParts(raw);
     if (!parts || !parts.year) return false;
 
     // Month before year, matching the reading order. Workday advances focus
     // itself once a segment is full, so each write starts by taking focus back
     // rather than trusting where the caret ended up.
-    // Defensive: legacy year-only profile dates (e.g. "2022") must still fill
-    // the Month segment; leaving it blank produces Workday "Invalid Date: /YYYY".
-    // Normalized profiles already store YYYY-MM, so this only affects incomplete data.
-    if (!parts.month) parts.month = "01";
-
     const order = { month: 0, day: 1, year: 2 };
     const sorted = [...segs].sort((a, b) => order[a.kind] - order[b.kind]);
 
     let wrote = 0;
-    for (const { node, kind } of sorted) {
-      const cap = Number(node.getAttribute?.("maxlength") ?? node.maxLength ?? 0) || (kind === "year" ? 4 : 2);
-      let raw = parts[kind];
-      if (!raw && kind === "month") raw = "01";
-      if (!raw) continue;
-      const text = cap === 4 ? String(raw).padStart(4, "0") : String(raw).padStart(2, "0").slice(-2);
-
-      try {
-        ensureVisible(node);
-        node.focus?.({ preventScroll: true });
-        const writer = nativeSetter(node);
-        const put = (v) => { if (writer) writer.call(node, v); else node.value = v; };
-        put("");
-        fire(node, "input");
-        put(text);
-        const tracker = node._valueTracker;
-        if (tracker && typeof tracker.setValue === "function") tracker.setValue("");
-        fire(node, "keydown", "beforeinput", "input", "keyup", "change");
-        if (String(node.value ?? "") === text) wrote++;
-      } catch {}
+    for (const seg of sorted) {
+      const part = parts[seg.kind];
+      if (!part) continue;
+      try { if (writeSegment(seg, part)) wrote++; } catch {}
     }
 
     try { sorted[sorted.length - 1]?.node.blur?.(); } catch {}
@@ -1047,10 +1003,6 @@
   function setTextValue(el, value) {
     const text = String(value ?? "");
     if (!text) return false;
-
-    // Workday may render Month/Year as one masked input. Handle that before
-    // generic text assignment so the mask cannot turn `01/2022` into `/2022`.
-    if (setMaskedMonthYear(el, text)) return true;
 
     // A date split across MM / DD / YYYY boxes is written segment by segment.
     if (setSegmentedDate(el, text)) return true;
@@ -1133,11 +1085,26 @@
     // Key events bracket the input for the same reason they do in
     // `retypeValue`: Workday will not consider a field answered until it has
     // seen keyboard activity on it, whatever the box contains.
-    fire(el, "keydown", "beforeinput", "input", "keyup", "change");
+    //
+    // `change` is deliberately not in that list. `execCommand("insertText")`
+    // leaves the control dirty in the browser's own bookkeeping, so blurring it
+    // a moment later makes the *browser* fire `change` — and firing one here as
+    // well committed every value twice. Identical values are harmless in a text
+    // box, but a site that reacts to `change` by re-rendering or firing a
+    // lookup did all of it twice per field. The synthetic one is kept as a
+    // fallback for the case where nothing native arrives, which is what happens
+    // when the control could not take focus.
+    let committed = false;
+    const noteCommit = () => { committed = true; };
+    try { el.addEventListener("change", noteCommit, true); } catch {}
+
+    fire(el, "keydown", "beforeinput", "input", "keyup");
     // A blur is what commits the value on most ATS validators, but stealing
     // focus back afterwards is what made the page jitter. Blur once, silently.
     try { el.blur?.(); } catch {}
     fire(el, "blur");
+    if (!committed) fire(el, "change");
+    try { el.removeEventListener("change", noteCommit, true); } catch {}
 
     const isRich = el.isContentEditable && el.tagName !== "INPUT" && el.tagName !== "TEXTAREA";
     const settled = isRich ? clean(el.textContent) : String(el.value ?? "");
@@ -1198,9 +1165,6 @@
   function retypeValue(el, value) {
     const text = String(value ?? "");
     if (!text) return false;
-
-    // A single masked Month/Year input needs digit-by-digit entry as well.
-    if (setMaskedMonthYear(el, text)) return true;
 
     // A segmented date is rewritten segment by segment; retyping the whole
     // string at one segment is what produced "Invalid Date: /2019".

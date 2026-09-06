@@ -203,9 +203,29 @@ async function pushQueue() {
     // response cleared the local queue, including a perfectly valid HTTP 200
     // with responsesSaved=0 when the question was rejected by validation. That
     // made the answer disappear from Pending while never reaching Saved Answers.
-    const confirmed = new Set(res.data?.savedKeys ?? []);
+    const reported = Array.isArray(res.data?.savedKeys) ? res.data.savedKeys : null;
     const { pendingResponses: now } = await store.get("pendingResponses");
-    const remaining = (now ?? []).filter((r) => !confirmed.has(queueKey(r.question)));
+    let remaining;
+    if (reported) {
+      const confirmed = new Set(reported);
+      remaining = (now ?? []).filter((r) => !confirmed.has(queueKey(r.question)));
+    } else if ((res.data?.responsesSaved ?? 0) >= responses.length) {
+      /**
+       * A server that does not say *which* answers it wrote.
+       *
+       * Requiring `savedKeys` is right when the field is there — it is what
+       * stops a rejected answer being dropped. But an older deployment omits it
+       * entirely, and then nothing is ever confirmed: the queue never empties,
+       * the same answers are re-uploaded on every sync, and Pending never
+       * clears however many times the applicant presses Sync. When the server
+       * reports it wrote at least as many as were offered, take it at its word
+       * for the batch that was just sent.
+       */
+      const uploaded = new Set(responses.map((r) => queueKey(r.question)));
+      remaining = (now ?? []).filter((r) => !uploaded.has(queueKey(r.question)));
+    } else {
+      remaining = now ?? [];
+    }
     if (remaining.length) await store.set({ pendingResponses: remaining });
     else await store.remove(["pendingResponses"]);
   }
