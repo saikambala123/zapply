@@ -1,24 +1,30 @@
-# Zapply v1.13.12 — Workday From/To Date Corruption Fix (Professional Release)
+# Zapply v1.13.0 — Production Hardening Audit
 
-## Critical fix
+## Changes made
 
-Live Workday applications were filling **From** as `01/0018` instead of `01/2018`.
+- Hardened extension API calls with a 15-second AbortController timeout so a stalled network request cannot leave the popup/autofill waiting forever.
+- Hardened Workday account auto-submit: it now waits for every visible password field to contain a value and for the submit control to be enabled before clicking. It never submits a half-filled account form.
+- Optimized `/api/extension/sync` saved-answer persistence from sequential per-answer MongoDB calls to a deduplicated `bulkWrite`, reducing serverless latency and preventing duplicate upserts for the same normalized question in one request.
+- Rebuilt Chrome and Firefox extension distributions from the hardened source so `dist/` matches `extension/`.
+- Kept the existing one-pass autofill protections: plan-before-write, one dropdown at a time, no body-click dismissal, profile-owned fields protected from saved-answer contamination, bounded reconciliation, and validation-aware repair.
 
-### Cause
-1. Workday From/To boxes often omit an `MM/YYYY` placeholder, so the masked digit-by-digit writer was skipped.
-2. Bulk write of `01/2018` was interpreted incorrectly by Workday’s mask.
-3. Any 2-digit or zero-padded year (`18`, `0018`) was written as year `0018`.
+## Verification performed
 
-### Fix
-- Always expand years to a real **4-digit** year (`18` / `0018` → `2018`).
-- Detect Workday From/To/Start/End date inputs even without an MM/YYYY placeholder.
-- Prefer digit-by-digit masked write for MM/YYYY values; never leave a corrupted year on the control.
-- `dateForField` always emits `MM/YYYY` with a full 4-digit year for experience From/To fields.
+- All extension JavaScript/MJS files pass `node --check` syntax validation.
+- Existing static password/LinkedIn regression test passes.
+- Chrome and Firefox extension packages rebuild successfully with `NEXT_PUBLIC_APP_URL=https://zapply.vercel.app`.
 
-## Also retained
-- Current-role checkbox only on the profile job marked current
-- End dates left blank for current roles
-- Per-row work history mapping
+## Environment limitation
 
-## Version
-Chrome & Firefox extension **1.13.12**
+The supplied project archive has a correct `package-lock.json`, but the execution environment could not complete dependency installation. The local `node_modules` tree was incomplete (`next`, `mongoose`, `playwright`, and related packages were missing/corrupt), so a full Next.js production build and Playwright browser suite could not be executed here. This is an environment/dependency-install limitation, not a reported source syntax error.
+
+Before release, run:
+
+```bash
+npm ci
+npm run ext:test
+npm run test:api
+npm run test:ui
+npm run build
+NEXT_PUBLIC_APP_URL=https://YOUR-PRODUCTION-DOMAIN node scripts/build-extension.mjs
+```
