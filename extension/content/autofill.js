@@ -37,6 +37,7 @@
     profile: null,      // the profile actually used (Premium may pick a different one)
     scoring: null,      // { score, reason, label } from Premium profile scoring
     drafted: new Set(), // elements filled by AI — the user must review these
+    engaged: false,     // watchers attached: set once this looks like an application
     duplicate: null,    // a prior application for this posting, if any
     allFields: [],      // everything scanned on the last run
     stopRequested: false,
@@ -102,7 +103,19 @@
     const inputs = document.querySelectorAll(
       'input[type="text"], input[type="email"], input[type="tel"], input:not([type]), textarea'
     );
-    const formHit = inputs.length >= 3;
+    /**
+     * A step made of choices is still an application step.
+     *
+     * This counted text boxes and nothing else, so a page of radio groups,
+     * checkboxes and dropdowns — a demographics step, an eligibility
+     * questionnaire, the second page of almost any Workday application —
+     * scored zero here, the content script disengaged, and nothing the
+     * applicant answered on it was ever recorded.
+     */
+    const choices = document.querySelectorAll(
+      'select, input[type="radio"], input[type="checkbox"], [role="radiogroup"], [role="combobox"], [role="listbox"]'
+    );
+    const formHit = inputs.length + choices.length >= 3;
     const fileHit = Boolean(document.querySelector('input[type="file"]'));
     const eeoHit = /gender|veteran|disability|ethnicity|race/i.test(document.body?.innerText?.slice(0, 30000) || "");
     return [urlHit, formHit, fileHit, eeoHit].filter(Boolean).length >= 2;
@@ -3199,32 +3212,94 @@
   }
 
   /**
+   * Anything the person clicks is watched from that moment on.
+   *
+   * `focusin` is not enough on its own. A great many ATS controls are divs —
+   * `role="radio"`, `role="checkbox"`, a react-select combobox — carrying no
+   * tabindex, so they can be clicked but never focused and the focus watcher
+   * never fired for them. Their answers were only ever picked up if the field
+   * happened to be in the one scan done at load, and on a step that rendered
+   * later it never was, so answering them produced nothing to save.
+   *
+   * The click may land on a wrapper, a label, or the tick mark inside an
+   * option, so the search runs from the target outwards and then inwards.
+   */
+  function watchClicks() {
+    const CONTROL_SEL =
+      "input, select, textarea, [role='radio'], [role='checkbox'], [role='combobox'], [role='listbox'], [role='switch'], [role='option']";
+
+    document.addEventListener("pointerdown", (event) => {
+      if (!event.isTrusted) return;
+      try {
+        const target = event.target;
+        if (!target?.closest) return;
+
+        // Outwards: the control itself, or the label/option wrapping the click.
+        let el = target.closest(CONTROL_SEL);
+
+        // A <label> commits to the control it names rather than one inside it.
+        if (!el) {
+          const label = target.closest("label");
+          const forId = label?.getAttribute?.("for");
+          if (forId) { try { el = document.getElementById(forId); } catch {} }
+          if (!el && label) el = label.querySelector(CONTROL_SEL);
+        }
+
+        // An option row in a portal belongs to whichever combobox is open.
+        if (el?.getAttribute?.("role") === "option") {
+          const owner = document.querySelector("[role='combobox'][aria-expanded='true']");
+          if (owner) el = owner;
+        }
+
+        if (!el) return;
+        watchControl(el);
+      } catch {}
+    }, true);
+  }
+
+  /**
+   * Bring one control under watch, working out its label and rule first.
+   *
+   * Shared by the focus and pointer watchers so both apply the same rules about
+   * what may be banked — in particular that a profile-owned box is never
+   * offered as a saved answer.
+   */
+  function watchControl(el) {
+    if (!el || el.__zapplyWatched || el.__zapplyGroupWatched || el.__zapplyIgnored) return;
+    if (!M.isFillable(el)) return;
+    if (["submit", "reset", "button", "image", "file"].includes(el.type)) return;
+    if (inPageChrome(el)) { el.__zapplyIgnored = true; return; }
+    const label = M.deriveLabel(el);
+    const rule = M.matchRule(el, label, RULES);
+    const field = { el, label, kind: M.fieldKind(el), rule };
+    /**
+     * Profile-owned fields are not banked as answers. This was opened up in
+     * 1.8.0 so hand-corrections could be saved, and that was a mistake: an
+     * email address captured off one form is an *answer* to a question whose
+     * wording resembles half the contact boxes on the next one, so it came
+     * back in the phone field. Contact details and identity belong in the
+     * profile, which is the only place they can be stored once and used
+     * everywhere without being matched by question text.
+     *
+     * A Yes/No/decline group is exempt — see isGenericChoiceGroup. Those are
+     * questions that merely share a word with a profile rule, and refusing
+     * them is what made demographic answers look like they never saved.
+     */
+    if (rule && PROFILE_OWNED_KEYS.has(rule.key) && !isGenericChoiceGroup(field)) {
+      el.__zapplyIgnored = true;
+      return;
+    }
+    captureOn(field);
+  }
+
+  /**
    * Anything the person focuses is watched from that moment on. A single scan
    * can't see fields a step hasn't rendered yet, and focus is the cheapest
    * possible signal that a control is about to be answered.
    */
   function watchOnFocus() {
     document.addEventListener("focusin", (event) => {
-      const el = event.target;
-      try {
-        if (!el || el.__zapplyWatched || el.__zapplyGroupWatched || el.__zapplyIgnored) return;
-        if (!M.isFillable(el)) return;
-        if (["submit", "reset", "button", "image", "file"].includes(el.type)) return;
-        if (inPageChrome(el)) { el.__zapplyIgnored = true; return; }
-        const label = M.deriveLabel(el);
-        const rule = M.matchRule(el, label, RULES);
-        /**
-         * Profile-owned fields are not banked as answers. This was opened up in
-         * 1.8.0 so hand-corrections could be saved, and that was a mistake: an
-         * email address captured off one form is an *answer* to a question whose
-         * wording resembles half the contact boxes on the next one, so it came
-         * back in the phone field. Contact details and identity belong in the
-         * profile, which is the only place they can be stored once and used
-         * everywhere without being matched by question text.
-         */
-        if (rule && PROFILE_OWNED_KEYS.has(rule.key)) { el.__zapplyIgnored = true; return; }
-        captureOn({ el, label, kind: M.fieldKind(el), rule });
-      } catch {}
+      try { watchControl(event.target); } catch {}
     }, true);
   }
 
@@ -3370,23 +3445,100 @@
     return state.session;
   }
 
+  /**
+   * Re-scan as the page grows.
+   *
+   * `watchPage()` used to run exactly once, at load. Everything rendered after
+   * that — the next step of a Workday application, an "Add another" section, a
+   * demographics block that hydrates a second late — was invisible to it, and
+   * the only remaining way to attach a watcher was focus, which never fires for
+   * a div-based control. So on a multi-step form the applicant answered a whole
+   * page of questions and the popup showed nothing to save.
+   *
+   * Debounced, and only woken by mutations that actually add an element, so a
+   * page animating its own DOM does not turn this into a scan loop.
+   */
+  const RESCAN_DELAY_MS = 500;
+  /**
+   * A floor on how often the page is actually re-scanned.
+   *
+   * Debouncing alone is not enough on a portal that mutates continuously —
+   * Workday repaints on scroll — because the quiet period never arrives and
+   * the scans stack up. `collectFields` walks the whole document, so this has
+   * to stay cheap or it is a jank source on every page the extension runs on.
+   */
+  const RESCAN_MIN_GAP_MS = 1500;
+  let rescanTimer = null;
+  let rescanObserver = null;
+  let lastRescanAt = 0;
+
+  function scheduleRescan() {
+    clearTimeout(rescanTimer);
+    const since = Date.now() - lastRescanAt;
+    const wait = Math.max(RESCAN_DELAY_MS, RESCAN_MIN_GAP_MS - since);
+    rescanTimer = setTimeout(rescanForFields, wait);
+  }
+
+  function watchForNewFields() {
+    if (rescanObserver) return;
+    try {
+      rescanObserver = new MutationObserver((records) => {
+        for (const record of records) {
+          for (const node of record.addedNodes ?? []) {
+            if (node.nodeType !== 1) continue;
+            scheduleRescan();
+            return;
+          }
+        }
+      });
+      rescanObserver.observe(document.documentElement, { childList: true, subtree: true });
+    } catch {}
+  }
+
+  function rescanForFields() {
+    lastRescanAt = Date.now();
+    /**
+     * The application-page test is re-run here, not only at load.
+     *
+     * It counts the text boxes on the page, and a form that renders from
+     * JavaScript has none of them at DOMContentLoaded. The whole content script
+     * disengaged on exactly the modern applications it is most needed on, and
+     * nothing the applicant typed was ever recorded. Once engaged it stays
+     * engaged; this only ever turns capture on.
+     */
+    if (!state.engaged) {
+      if (!isApplicationPage()) return;
+      engage();
+      return;
+    }
+    try { watchPage(); } catch {}
+  }
+
+  /** Attach every watcher, once, as soon as this looks like an application. */
+  function engage() {
+    if (state.engaged) return;
+    state.engaged = true;
+    watchSubmit();
+    // Answers typed by hand are recorded from now on, whether or not a fill is
+    // ever run on this page.
+    watchOnFocus();
+    watchClicks();
+    watchPage();
+    watchValidation();
+    startSweep();
+  }
+
   async function boot() {
-    if (!isApplicationPage()) return;
     state.adapter = ATS.detect();
 
     const session = await loadSession();
     if (!session?.profile) return;
     if (isExcluded(session.settings)) return;
 
-    watchSubmit();
-
-    // Answers typed by hand are recorded from now on, whether or not a fill is
-    // ever run on this page, and whether or not this posting turns out to be a
-    // duplicate below.
-    watchOnFocus();
-    watchPage();
-    watchValidation();
-    startSweep();
+    // Watch for the form arriving even if it is not here yet.
+    watchForNewFields();
+    if (isApplicationPage()) engage();
+    if (!state.engaged) return;
 
     const meta = ATS.readJobMeta(state.adapter);
     const dupe = await send({
