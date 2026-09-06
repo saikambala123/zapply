@@ -1,4 +1,13 @@
-# Zapply v1.13.0 — Production Hardening Audit
+# Zapply v1.13.9 — Workday Dates & Pending Answer Accuracy Release
+
+
+## v1.13.9 release update
+
+- Fixed Workday masked `MM/YYYY` work-history dates. Month and year are now entered through the same digit-by-digit path expected by Workday, preventing `Invalid Date: /YYYY` and restoring the saved start/end month values.
+- Added a defensive January fallback only when a legacy profile contains a year without a month; normalized `YYYY-MM` profile dates remain unchanged.
+- Added stable, human-readable pending-answer labels for Work Experience and Education fields (for example, `Work Experience 1 — Start Date`), so multiple edited rows cannot collapse into the same generic question.
+- Preserved manual-edit provenance across profile-backed fields, dropdowns, radio groups, checkboxes, and repeated experience rows. Programmatic autofill remains excluded from Pending Saved Answers.
+- Bumped Chrome and Firefox extension manifests to `1.13.9` and rebuilt both distribution packages from the same source.
 
 ## Changes made
 
