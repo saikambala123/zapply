@@ -144,6 +144,8 @@ export const POST = handler(async (req: NextRequest) => {
   }
 
   let savedCount = 0;
+  const savedKeys: string[] = [];
+  const rejectedKeys: string[] = [];
   if (Array.isArray(body.responses) && body.responses.length) {
     // Validate/filter once, then persist in one MongoDB bulk operation. The
     // previous implementation performed a find + save/create for every answer,
@@ -154,8 +156,14 @@ export const POST = handler(async (req: NextRequest) => {
         const question = String(r?.question || "").trim();
         const answer = String(r?.answer ?? "").trim();
         const normalizedKey = normalizeQuestion(question);
-        if (!question || !answer || !normalizedKey) return null;
-        if (!isRealQuestion(question)) return null;
+        if (!question || !answer || !normalizedKey) {
+          if (question) rejectedKeys.push(normalizedKey || question.slice(0, 180));
+          return null;
+        }
+        if (!isRealQuestion(question)) {
+          rejectedKeys.push(normalizedKey);
+          return null;
+        }
         return {
           question, answer, normalizedKey,
           inputType: r.inputType || "text",
@@ -219,12 +227,15 @@ export const POST = handler(async (req: NextRequest) => {
       // correct changes no field, and counting only modifications would report
       // that perfectly successful write as nothing stored.
       savedCount = (result.upsertedCount ?? 0) + (result.matchedCount ?? 0);
+      savedKeys.push(...deduped.map((r) => r.normalizedKey));
     }
   }
 
   return ok({
     applicationId: application ? String(application._id) : null,
     responsesSaved: savedCount,
+    savedKeys,
+    rejectedKeys,
     syncedAt: new Date().toISOString(),
   });
 });
