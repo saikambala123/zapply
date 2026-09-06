@@ -199,18 +199,27 @@ async function pushQueue() {
   });
 
   if (res.ok) {
-    // Only the answers just sent are removed. Anything captured while the
-    // request was in flight stays queued rather than being thrown away.
-    const sent = new Set(responses.map((r) => queueKey(r.question)));
+    // Remove only keys the server explicitly confirmed. Previously every 200
+    // response cleared the local queue, including a perfectly valid HTTP 200
+    // with responsesSaved=0 when the question was rejected by validation. That
+    // made the answer disappear from Pending while never reaching Saved Answers.
+    const confirmed = new Set(res.data?.savedKeys ?? []);
     const { pendingResponses: now } = await store.get("pendingResponses");
-    const remaining = (now ?? []).filter((r) => !sent.has(queueKey(r.question)));
+    const remaining = (now ?? []).filter((r) => !confirmed.has(queueKey(r.question)));
     if (remaining.length) await store.set({ pendingResponses: remaining });
     else await store.remove(["pendingResponses"]);
   }
   // The server reports what it actually wrote; the local count is only what we
-  // offered it, and reporting that as saved is how sync looked successful while
-  // nothing had reached the dashboard.
-  return { ...res, pushed: res.ok ? (res.data?.responsesSaved ?? 0) : 0 };
+  // offered it. A response with zero confirmed keys is not a successful sync.
+  const confirmedCount = res.ok ? (res.data?.responsesSaved ?? 0) : 0;
+  return {
+    ...res,
+    ok: res.ok && (confirmedCount > 0 || responses.length === 0),
+    pushed: confirmedCount,
+    error: res.ok && responses.length && confirmedCount === 0
+      ? "Zapply could not save these answers. They remain pending; review the question and try Sync again."
+      : res.error,
+  };
 }
 
 function queueKey(question) {

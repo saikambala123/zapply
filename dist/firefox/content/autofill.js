@@ -1701,6 +1701,29 @@
     return { drafted: done, skipped: done ? null : (error ? "error" : null), error };
   }
 
+  /**
+   * Remove only exact duplicate profile jobs before sizing/filling repeated
+   * Work Experience blocks. Resume/profile imports can contain the same job
+   * twice; treating those as two distinct rows makes the extension deliberately
+   * create a duplicate experience section. We compare all meaningful job data,
+   * so two genuinely different roles at the same employer are preserved.
+   */
+  function profileForAutofill(profile) {
+    if (!profile || !Array.isArray(profile.experience)) return profile;
+    const seen = new Set();
+    const experience = profile.experience.filter((job) => {
+      const key = [
+        job?.company, job?.title, job?.location, job?.locationType,
+        job?.employmentType, job?.startDate, job?.endDate, job?.current,
+        job?.description,
+      ].map((v) => String(v ?? "").trim().toLowerCase()).join("\u001f");
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    return { ...profile, experience };
+  }
+
   /* ================================================================== */
   /*  The run                                                            */
   /* ================================================================== */
@@ -1760,7 +1783,10 @@
         state.profile = picked.profile;
         state.scoring = picked.scoring;
       }
-      const profile = state.profile ?? session.profile;
+      const profile = profileForAutofill(state.profile ?? session.profile);
+      // Keep the sanitized profile local to this fill. The dashboard/profile
+      // record is never mutated; exact duplicate roles are simply not treated
+      // as separate ATS rows during autofill.
 
       if (authPage) {
         // Only the email/username and the user's saved "Password" answer are
@@ -1930,10 +1956,27 @@
           fields.push(...fresh);
           state.allFields = fields;
           result.detected = fields.length;
+
+          /*
+           * A newly-created Work Experience row is collected by itself. If we
+           * index that small collection in isolation, its only Company/Title
+           * anchor becomes row 0 and the second profile job is copied into the
+           * new row. This is the exact duplication seen on Workday: the row was
+           * genuinely new, but its fields were planned as if they belonged to
+           * the first job. Re-index against the complete DOM collection before
+           * planning any fresh controls.
+           */
+          assignRowIndexes(fields, EXPERIENCE_KEYS, [
+            "currentCompany", "currentTitle", "responsibilities",
+          ]);
+          assignRowIndexes(fields, EDUCATION_KEYS, ["school", "degree", "fieldOfStudy"]);
         }
 
         const retry = [
           ...fresh.filter((f) => {
+            // The row indexes above are now final for this pass. Re-plan from
+            // the full collection so the newly-created row reads profile[index]
+            // rather than defaulting to profile[0].
             const plan = planField(f, profile, settings);
             plans.set(f, plan);
             if (plan.status === "unmatched") { state.unmatched.push(f); mark(f.el); }

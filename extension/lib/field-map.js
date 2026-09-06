@@ -198,10 +198,50 @@
   };
 
   const dateForField = (raw, el) => {
+    const value = String(raw ?? "").trim();
+    if (!value) return null;
+
     const type = (el?.type || "").toLowerCase();
-    if (type === "month") return datePart(raw, "month");
-    if (type === "date") return raw ? String(raw).slice(0, 10) : null;
-    return raw;
+    if (type === "month") {
+      const m = value.match(/^(\d{4})-(\d{1,2})/);
+      return m ? `${m[1]}-${String(Number(m[2])).padStart(2, "0")}` : null;
+    }
+    if (type === "date") {
+      const m = value.match(/^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?/);
+      if (!m) return null;
+      const month = String(Number(m[2])).padStart(2, "0");
+      const day = String(Number(m[3] || 1)).padStart(2, "0");
+      return `${m[1]}-${month}-${day}`;
+    }
+
+    // Text date boxes are inconsistent across ATSs. Workday commonly uses
+    // MM/YYYY, while other portals use YYYY-MM or a full MM/DD/YYYY string.
+    // Never pass a bare year into an MM/YYYY field: that produces the visible
+    // "MM / 2021" / invalid-date state instead of a valid value. If the profile
+    // only contains a year, leave the field empty rather than inventing a month.
+    const hint = [
+      el?.getAttribute?.("placeholder"),
+      el?.getAttribute?.("aria-label"),
+      el?.getAttribute?.("data-automation-id"),
+    ].filter(Boolean).join(" ").toLowerCase();
+    const ym = value.match(/^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?/);
+    const yearOnly = value.match(/^\d{4}$/);
+
+    if (/mm\s*[/-]\s*yyyy|mm\s*\/\s*yyyy|month\s*\/?\s*year/.test(hint)) {
+      if (!ym) return null;
+      return `${String(Number(ym[2])).padStart(2, "0")}/${ym[1]}`;
+    }
+    if (/yyyy\s*[-/]\s*mm|year\s*[-/]\s*month/.test(hint)) {
+      if (!ym) return yearOnly ? value : null;
+      return `${ym[1]}-${String(Number(ym[2])).padStart(2, "0")}`;
+    }
+    if (/mm\s*[/-]\s*dd\s*[/-]\s*yyyy|month.*day.*year/.test(hint)) {
+      if (!ym || !ym[3]) return null;
+      return `${String(Number(ym[2])).padStart(2, "0")}/${String(Number(ym[3])).padStart(2, "0")}/${ym[1]}`;
+    }
+
+    if (ym) return `${ym[1]}-${String(Number(ym[2])).padStart(2, "0")}`;
+    return yearOnly ? value : null;
   };
 
   const dateMonth = (raw) => datePart(raw, "monthName") || datePart(raw, "month");
