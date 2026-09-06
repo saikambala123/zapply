@@ -844,20 +844,35 @@
     if (!raw) return null;
 
     const pad2 = (n) => String(n).padStart(2, "0");
+    // Always emit a 4-digit year. A 2-digit year written into Workday's
+    // MM/YYYY mask becomes "0018" (e.g. 01/0018) after zero-padding — the
+    // exact corruption reported on live Workday applications.
+    const year4 = (y) => {
+      const s = String(y ?? "").replace(/\D/g, "");
+      if (!s) return "";
+      let n = Number(s);
+      if (!Number.isFinite(n)) return "";
+      // "18", "0018", or any value under 100 must expand to a real 4-digit year.
+      // Zero-padding a short year into Workday produced the live "01/0018" bug.
+      if (n >= 0 && n <= 99) return String(n <= 40 ? 2000 + n : 1900 + n);
+      if (s.length >= 4) return s.slice(-4);
+      return String(n);
+    };
 
     let m = raw.match(/^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?$/);        // 2019-12-05
-    if (m) return { year: m[1], month: pad2(m[2]), day: m[3] ? pad2(m[3]) : "" };
+    if (m) return { year: year4(m[1]), month: pad2(m[2]), day: m[3] ? pad2(m[3]) : "" };
 
     m = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);                // 12/05/2019
-    if (m) return { month: pad2(m[1]), day: pad2(m[2]), year: m[3] };
+    if (m) return { month: pad2(m[1]), day: pad2(m[2]), year: year4(m[3]) };
 
-    m = raw.match(/^(\d{1,2})\/(\d{4})$/);                           // 12/2019
-    if (m) return { month: pad2(m[1]), year: m[2], day: "" };
+    m = raw.match(/^(\d{1,2})\/(\d{2,4})$/);                          // 12/2019 or 12/19
+    if (m) return { month: pad2(m[1]), year: year4(m[2]), day: "" };
 
     m = raw.match(/^(\d{4})$/);                                      // 2019
-    // Year-only: leave month empty so callers can decide the defensive
-    // January fallback (masked + segmented paths both apply "01").
-    if (m) return { year: m[1], month: "", day: "" };
+    if (m) return { year: year4(m[1]), month: "", day: "" };
+
+    m = raw.match(/^(\d{1,2})$/);                                    // 18 (ambiguous — treat as year only when 2-digit in range)
+    if (m && Number(m[1]) >= 0 && Number(m[1]) <= 99) return { year: year4(m[1]), month: "", day: "" };
 
     const parsed = new Date(raw);
     if (!Number.isNaN(parsed.getTime())) {
@@ -881,23 +896,56 @@
   function isMaskedMonthYearInput(el) {
     if (!el || el.tagName !== "INPUT") return false;
     const type = String(el.getAttribute?.("type") || el.type || "text").toLowerCase();
-    if (!["text", "tel", "number"].includes(type)) return false;
+    if (!["text", "tel", "number", "search"].includes(type)) return false;
     const hint = [
       el.getAttribute?.("placeholder"),
       el.getAttribute?.("aria-label"),
       el.getAttribute?.("data-automation-id"),
       el.getAttribute?.("name"),
       el.getAttribute?.("id"),
+      el.getAttribute?.("title"),
     ].filter(Boolean).join(" ");
-    return /(?:mm\s*[/-]\s*yyyy|month\s*[/-]\s*year|month.*year)/i.test(hint);
+    if (/(?:mm\s*[/-]\s*yyyy|month\s*[/-]\s*year|month.*year|dateSectionMonthYear|monthYear)/i.test(hint)) return true;
+    // Workday "From" / "To" experience date boxes often omit an MM/YYYY
+    // placeholder and only expose a calendar affordance. Treat short numeric
+    // inputs next to From/To/Start/End labels as masked month-year as well.
+    const labelHint = [
+      el.getAttribute?.("aria-label"),
+      el.labels && el.labels[0] ? el.labels[0].textContent : "",
+      el.closest?.("label")?.textContent,
+      el.parentElement?.textContent,
+    ].filter(Boolean).join(" ");
+    if (/\b(from|to|start\s*date|end\s*date)\b/i.test(labelHint) && !/\b(day|dd)\b/i.test(hint)) {
+      const max = Number(el.getAttribute?.("maxlength") ?? el.maxLength ?? 0);
+      if (!max || max <= 10) return true;
+    }
+    return false;
   }
 
   function setMaskedMonthYear(el, value) {
-    if (!isMaskedMonthYearInput(el)) return false;
+    // Prefer the masked path whenever the value is clearly MM/YYYY or YYYY-MM,
+    // even if the control's placeholder did not advertise the mask. Bulk
+    // assignment of "01/2018" is what produced the live "01/0018" corruption.
     const parts = dateParts(value);
-    if (!parts?.year) return false;
-    const month = String(parts.month || "1").padStart(2, "0");
-    const digits = `${month}${String(parts.year).padStart(4, "0")}`;
+    const looksMonthYear = Boolean(parts?.year) && (
+      isMaskedMonthYearInput(el) ||
+      /^\d{1,2}\/\d{2,4}$/.test(String(value ?? "").trim()) ||
+      /^\d{4}-\d{1,2}$/.test(String(value ?? "").trim())
+    );
+    if (!looksMonthYear || !parts?.year) return false;
+    if (!isMaskedMonthYearInput(el) && !/^\d{1,2}\/\d{2,4}$/.test(String(value ?? "").trim()) && !/^\d{4}-\d{1,2}$/.test(String(value ?? "").trim())) {
+      return false;
+    }
+    // When the control is not clearly masked but the value is MM/YYYY, still
+    // use digit-by-digit only for Workday-like short inputs.
+    if (!isMaskedMonthYearInput(el)) {
+      const max = Number(el.getAttribute?.("maxlength") ?? el.maxLength ?? 0);
+      if (max && max > 10) return false;
+    }
+    const month = String(parts.month || "01").padStart(2, "0").slice(-2);
+    const year = String(parts.year).replace(/\D/g, "").slice(0, 4);
+    if (year.length !== 4) return false;
+    const digits = `${month}${year}`;
     if (!/^\d{6}$/.test(digits)) return false;
 
     ensureVisible(el);
@@ -933,7 +981,16 @@
 
       // A few Workday variants ignore execCommand but accept a final native
       // assignment when the value is already in the mask's canonical shape.
-      put(`${month}/${parts.year}`);
+      // Always use the 4-digit year — never zero-pad a short year into 00XX.
+      put(`${month}/${year}`);
+      if (tracker && typeof tracker.setValue === "function") tracker.setValue("");
+      fire(el, "beforeinput", "input", "change", "blur");
+      const finalDigits = String(el.value ?? "").replace(/\D/g, "");
+      if (finalDigits === digits) return true;
+      // Last resort: clear and write canonical MM/YYYY as a single string.
+      put("");
+      fire(el, "input");
+      put(`${month}/${year}`);
       if (tracker && typeof tracker.setValue === "function") tracker.setValue("");
       fire(el, "beforeinput", "input", "change", "blur");
       return String(el.value ?? "").replace(/\D/g, "") === digits;
