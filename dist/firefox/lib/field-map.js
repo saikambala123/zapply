@@ -132,9 +132,15 @@
     const parsed = parseProfileDate(raw);
     if (!parsed) return null;
     if (part === "year") return parsed.year;
-    if (part === "month") return parsed.month;
+    // Defensive January when a legacy profile stores year-only (e.g. "2022").
+    // Workday month controls cannot be left blank; normalized YYYY-MM profiles
+    // already have a real month and are unchanged.
+    if (part === "month") return parsed.month || (parsed.year ? "01" : null);
     if (part === "day") return parsed.day || "1";
-    if (part === "monthName") return parsed.month ? MONTH_NAMES[Number(parsed.month) - 1] || null : null;
+    if (part === "monthName") {
+      const mm = parsed.month || (parsed.year ? "01" : null);
+      return mm ? MONTH_NAMES[Number(mm) - 1] || null : null;
+    }
     return null;
   };
 

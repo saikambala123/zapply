@@ -843,24 +843,28 @@
     const raw = String(value ?? "").trim();
     if (!raw) return null;
 
+    const pad2 = (n) => String(n).padStart(2, "0");
+
     let m = raw.match(/^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?$/);        // 2019-12-05
-    if (m) return { year: m[1], month: m[2], day: m[3] ?? "" };
+    if (m) return { year: m[1], month: pad2(m[2]), day: m[3] ? pad2(m[3]) : "" };
 
     m = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);                // 12/05/2019
-    if (m) return { month: m[1], day: m[2], year: m[3] };
+    if (m) return { month: pad2(m[1]), day: pad2(m[2]), year: m[3] };
 
     m = raw.match(/^(\d{1,2})\/(\d{4})$/);                           // 12/2019
-    if (m) return { month: m[1], year: m[2], day: "" };
+    if (m) return { month: pad2(m[1]), year: m[2], day: "" };
 
     m = raw.match(/^(\d{4})$/);                                      // 2019
+    // Year-only: leave month empty so callers can decide the defensive
+    // January fallback (masked + segmented paths both apply "01").
     if (m) return { year: m[1], month: "", day: "" };
 
     const parsed = new Date(raw);
     if (!Number.isNaN(parsed.getTime())) {
       return {
         year: String(parsed.getFullYear()),
-        month: String(parsed.getMonth() + 1),
-        day: String(parsed.getDate()),
+        month: pad2(parsed.getMonth() + 1),
+        day: pad2(parsed.getDate()),
       };
     }
     return null;
@@ -947,13 +951,19 @@
     // Month before year, matching the reading order. Workday advances focus
     // itself once a segment is full, so each write starts by taking focus back
     // rather than trusting where the caret ended up.
+    // Defensive: legacy year-only profile dates (e.g. "2022") must still fill
+    // the Month segment; leaving it blank produces Workday "Invalid Date: /YYYY".
+    // Normalized profiles already store YYYY-MM, so this only affects incomplete data.
+    if (!parts.month) parts.month = "01";
+
     const order = { month: 0, day: 1, year: 2 };
     const sorted = [...segs].sort((a, b) => order[a.kind] - order[b.kind]);
 
     let wrote = 0;
     for (const { node, kind } of sorted) {
       const cap = Number(node.getAttribute?.("maxlength") ?? node.maxLength ?? 0) || (kind === "year" ? 4 : 2);
-      const raw = parts[kind];
+      let raw = parts[kind];
+      if (!raw && kind === "month") raw = "01";
       if (!raw) continue;
       const text = cap === 4 ? String(raw).padStart(4, "0") : String(raw).padStart(2, "0").slice(-2);
 
