@@ -914,8 +914,11 @@
       const parts = text.split(" | ").map((x) => x.trim()).filter(Boolean);
       for (const part of parts) {
         if (part.length < 4) continue;
-        if (options.has(part.toLowerCase())) continue;
+        if (options.has(answerKey(part))) continue;
         if (ANSWER_LIKE_RE.test(part)) continue;
+        // A uuid is unique to this one form. Looking one up can only ever miss,
+        // and a near-miss against an unrelated record is worse than a miss.
+        if (looksMachineGenerated(part)) continue;
         if (!candidates.includes(part)) candidates.push(part);
       }
     };
@@ -2092,7 +2095,24 @@
       "i (?:do not|don't|dont) (?:wish|want|choose) to (?:answer|say|disclose|self[-\\s]?identify|specify)|" +
       "(?:i )?(?:decline|choose not|do not wish|don't wish) to (?:self[-\\s]?identify|answer|disclose|specify|state)|" +
       "declined? to self[-\\s]?identify|do not wish to disclose|" +
+      /**
+       * "I prefer to self-describe".
+       *
+       * An option on every demographic question Ashby and Greenhouse render,
+       * and the one that was banked as a *question* — the humanized `id` reads
+       * back as "i prefer to self describe", which the exact-match options test
+       * missed because humanize() had already turned the hyphen into a space.
+       * Matching it here settles it however the punctuation lands.
+       */
+      "(?:i )?(?:prefer|choose|wish|want|would like) (?:not )?to self[-\\s]?describe|" +
+      "self[-\\s]?describe|" +
       "select(?:\\s*an?\\s*option|\\s*one)?|please select|choose(?:\\s*an?\\s*option|\\s*one)?|" +
+      /**
+       * A typeahead's resting prompt. Ashby's location combobox says "Start
+       * typing…", which reached Saved Answers as the question for the city the
+       * applicant picked.
+       */
+      "start typing.*|begin typing.*|type to search.*|type here.*|search\\.*|none selected|" +
       "-{2,}.*|\\u2014.*" +
     ")\\s*[.?!*]?$",
     "i"
@@ -2108,11 +2128,105 @@
    * looked like a legitimate question — which is exactly how "Prefer not to
    * say" became one.
    */
+  /**
+   * One spelling for one answer.
+   *
+   * The options set used to hold plain lowercased text, so membership was an
+   * exact string test. `humanize()` reaches it having already replaced every
+   * hyphen and underscore with a space, so the option "I prefer to
+   * self-describe" and the machine name "i prefer to self describe" were two
+   * different strings — the option test missed, and the option label was saved
+   * as the question. Stripping punctuation on both sides removes the whole
+   * class of near-miss.
+   */
+  function answerKey(value) {
+    return String(value ?? "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+  }
+
+  /**
+   * Is this text an identifier the form generated, rather than words a person
+   * wrote?
+   *
+   * `deriveLabel` ends with the humanized `name` and `id` attributes so that a
+   * rule can match "firstName". On Ashby those attributes are uuids:
+   * `4409827-edb-0c17-447a-b4c5-8a5afa5ba1a9_gh_quest_labeled_checkbox_2`
+   * humanizes to "edb 0c17 447a b4c5 8a5afa5ba1a9 gh quest labeled checkbox 2",
+   * which is long enough and unlike enough to any option that it passed every
+   * test a question candidate had to pass — and that string is what the popup
+   * displayed as the question, and what the answer was banked under. Banked
+   * there it could never match again, because the next form's uuid is a
+   * different uuid, so the applicant was asked the same question on every
+   * application.
+   */
+  function looksMachineGenerated(text) {
+    const value = String(text || "");
+    if (!value) return false;
+
+    // A uuid fragment: four or more hex characters carrying both a letter and a
+    // digit. "0c17", "b4c5" and "8a5afa5ba1a9" all qualify; "2024" has no
+    // letter and "cafe" has no digit, so ordinary words and years are safe.
+    if (/\b(?=[0-9a-f]*[0-9])(?=[0-9a-f]*[a-f])[0-9a-f]{4,}\b/i.test(value)) return true;
+
+    // The scaffolding ATS builders leave in `name` and `id`.
+    if (/\b(?:gh[\s_-]?quest|systemfield|system[\s_-]?field|labell?ed[\s_-]?(?:checkbox|radio|select|input)|urn[\s_-]?li|data[\s_-]?automation[\s_-]?id|customfield|custom[\s_-]?field)\b/i.test(value)) {
+      return true;
+    }
+
+    // A generated ordinal — "... checkbox 2", "... question 14". A real
+    // question does not end by numbering its own widget.
+    if (/\b(?:checkbox(?:es)?|radio|select|dropdown|input|textarea|field|question|answer|option)\s*\d+\s*$/i.test(value)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Every humanized machine name attached to this control's group.
+   *
+   * Kept separate so a name-derived candidate can be demoted rather than
+   * banned: a bare text box whose only description is `name="notice_period"`
+   * still needs "notice period" as its question, and that is a perfectly good
+   * one. It just must never outrank the heading printed above a choice group.
+   */
+  function machineNameParts(el) {
+    const out = new Set();
+    const add = (value) => {
+      const text = String(value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+      if (text) out.add(text);
+    };
+    if (!el) return out;
+    let members = [el];
+    try { members = groupMembersOf(el) || [el]; } catch {}
+    if (!members.includes(el)) members = [el, ...members];
+    for (const member of members) {
+      if (!member?.getAttribute) continue;
+      try {
+        add(M.humanize?.(member.getAttribute("name")));
+        add(M.humanize?.(member.id));
+      } catch {}
+    }
+    return out;
+  }
+
+  /**
+   * A dropdown's resting row is a prompt, not a choice.
+   *
+   * "Start typing…" is Ashby's; the rest cover the typeaheads and native
+   * selects everywhere else. Stored as a choice it padded every saved dropdown
+   * answer with a fake option and showed the wrong count in the dashboard.
+   */
+  const PLACEHOLDER_OPTION_RE =
+    /^(?:select|choose|please\s+select|pick\s+one|start\s+typing|begin\s+typing|type\s+to\s+search|type\s+here|search|none\s+selected|-{2,})\b|^[-\u2013\u2014\s\u2026.]*$/i;
+
   function optionTextsForField(field) {
     const out = new Set();
     const add = (value) => {
-      const text = String(value ?? "").trim().replace(/\s+/g, " ");
-      if (text) out.add(text.toLowerCase());
+      const key = answerKey(value);
+      if (key) out.add(key);
     };
 
     const el = field?.el;
@@ -2202,8 +2316,9 @@
       if (inAnotherField(cand, stopAt)) return "";
       const text = (cand.textContent || "").trim().replace(/\s+/g, " ");
       if (text.length < 8 || text.length > 300) return "";
-      if (skip.has(text.toLowerCase())) return "";
+      if (skip.has(answerKey(text))) return "";
       if (ANSWER_LIKE_RE.test(text)) return "";
+      if (looksMachineGenerated(text)) return "";
       return text;
     };
 
@@ -2277,44 +2392,73 @@
     const el = field?.el;
     const parts = String(field?.label ?? "").split("|").map((x) => x.trim()).filter(Boolean);
     const options = optionTextsForField(field);
+    const machine = machineNameParts(el);
 
     const acceptable = (value) => {
       const text = String(value ?? "").trim().replace(/\s+/g, " ");
       if (text.length < 5 || text.length > 300) return "";
-      if (options.has(text.toLowerCase())) return "";
+      if (options.has(answerKey(text))) return "";
       if (ANSWER_LIKE_RE.test(text)) return "";
+      if (looksMachineGenerated(text)) return "";
       return text;
+    };
+
+    /** Acceptable *and* actually printed on the page, rather than derived from an attribute. */
+    const fromPage = (value) => {
+      const text = acceptable(value);
+      if (!text) return "";
+      return machine.has(text.toLowerCase()) ? "" : text;
     };
 
     // 1. The group's own accessible name — a <legend>, a radiogroup's
     //    aria-label, or whatever its aria-labelledby points at. This is the
     //    form stating which text is the question, so it outranks everything.
     for (const name of groupAccessibleNames(el)) {
-      const text = acceptable(name);
+      const text = fromPage(name);
       if (text) return text;
     }
 
     const isChoice = field?.kind === "radio" || field?.kind === "checkbox" || field?.kind === "select";
 
-    // 2. A derived label part that reads like a question rather than an answer.
+    // 2. A visible label part that reads like a question rather than an answer.
     if (isChoice) {
       for (const part of parts) {
-        const text = acceptable(part);
+        const text = fromPage(part);
         if (text && (/\?/.test(text) || text.length > 12)) return text;
       }
-      const heading = questionHeadingNear(el, options);
-      if (heading) return heading;
     }
 
-    // 3. Any remaining label part that is not one of the answers.
+    // 3. Any remaining visible label part that is not one of the answers.
+    for (const part of parts) {
+      const text = fromPage(part);
+      if (text) return text;
+    }
+
+    /**
+     * 4. The heading printed above the control.
+     *
+     * This used to sit *below* the raw label parts for everything except a
+     * choice group, and below only some of them even there — so on a form whose
+     * controls are named with uuids the humanized attribute won, and the
+     * question the applicant could plainly read above the boxes was never
+     * consulted. The search is now reached by every field before any
+     * attribute-derived text is considered.
+     */
+    const heading = questionHeadingNear(el, options);
+    if (heading) return heading;
+
+    /**
+     * 5. Last resort: the humanized `name` or `id`.
+     *
+     * Still worth having — a bare text box carrying nothing but
+     * `name="notice_period"` is asking about a notice period, and that is the
+     * only description of it that exists. `acceptable` has already rejected the
+     * uuid-shaped ones, so what reaches here reads like English.
+     */
     for (const part of parts) {
       const text = acceptable(part);
       if (text) return text;
     }
-
-    // 4. Last resort, for a text box whose label the page never associated.
-    const heading = questionHeadingNear(el, options);
-    if (heading) return heading;
     return "";
   }
 
@@ -2339,6 +2483,27 @@
     } catch {
       return String(answer) === String(written);
     }
+  }
+
+  /** Does this control still hold precisely the value Zapply wrote into it? */
+  function sameAsWritten(el, answer) {
+    const written = el.__zapplyWrittenValue;
+    if (written == null) return false;
+    try {
+      const a = M.normalizeChoiceText(String(answer));
+      const b = M.normalizeChoiceText(String(written));
+      return Boolean(a) && a === b;
+    } catch {
+      return String(answer) === String(written);
+    }
+  }
+
+  /** Was this control, or any member of its group, filled by the model? */
+  function isDrafted(el) {
+    const drafted = state.drafted;
+    if (!drafted?.size) return false;
+    if (drafted.has(el)) return true;
+    try { return groupMembersOf(el).some((m) => drafted.has(m)); } catch { return false; }
   }
 
   /**
@@ -2526,11 +2691,23 @@
    * wording, so a profile rule has no claim on it.
    */
   function isGenericChoiceGroup(field) {
-    if (field?.kind !== "radio" && field?.kind !== "checkbox") return false;
+    /**
+     * Dropdowns count too.
+     *
+     * This covered radios and checkboxes only, so the identical question drawn
+     * as a <select> — which is how most ATSs draw "Are you at least 18 years of
+     * age?" — kept whatever profile rule its wording happened to match, and
+     * correcting the answer by hand was silently refused. The applicant saw
+     * their change on the form and nothing in the unsaved list, which is the
+     * "dropdown answers don't save" report.
+     */
+    if (field?.kind !== "radio" && field?.kind !== "checkbox" && field?.kind !== "select") return false;
     let options = [];
     try { options = M.optionTextsFor(field.el) || []; } catch { return false; }
+    // The opening "Select…" row says nothing about what the question is.
+    options = options.map((o) => String(o).trim()).filter((o) => o && !PLACEHOLDER_OPTION_RE.test(o));
     if (options.length < 2) return false;
-    return options.every((option) => ANSWER_LIKE_RE.test(String(option).trim()));
+    return options.every((option) => ANSWER_LIKE_RE.test(option));
   }
 
   function recordAnswer(field, { userDriven }) {
@@ -2562,9 +2739,36 @@
 
     const answer = String(readValue(field) ?? "").trim();
     if (!answer) return false;
-    if (/^(select|choose|please select|--)/i.test(answer)) return false;
+    if (PLACEHOLDER_OPTION_RE.test(answer)) return false;
     if (el.__zapplyLastCaptured === answer) return false;
     if (!userDriven && matchesWritten(el, answer)) return false;
+
+    /**
+     * An answer Zapply wrote is never the applicant's answer.
+     *
+     * `__zapplyUserEdited` was the only provenance test, and it is set by an
+     * `input` listener as soon as the 1500ms programmatic window lapses. The
+     * settle passes that repair a form the page cleared run at 900ms and
+     * 2200ms — the "Restored 7 fields" notice — so the second of them writes
+     * outside that window, the listener called it typing, and answers the
+     * applicant had never touched appeared in the unsaved list. Asking whether
+     * the control still holds exactly what we put in it settles provenance
+     * without depending on the timing of any event.
+     *
+     * Exact equality, not the containment `matchesWritten` uses: ticking a
+     * second box in a group leaves the first one in the value, and that is a
+     * new answer, not our old one.
+     */
+    if (sameAsWritten(el, answer)) return false;
+
+    /**
+     * A drafted answer is held to the stricter test.
+     *
+     * A model's paragraph is the one thing on the form that was neither the
+     * applicant's nor the profile's, and a widget that reflows or trims it
+     * would slip past exact equality. Until they change it, it is not theirs.
+     */
+    if (isDrafted(el) && matchesWritten(el, answer)) return false;
 
     // readValue reports an empty checkbox group as "No". That is the right
     // reading for a single "I agree" box the person deliberately left clear,
@@ -2606,10 +2810,7 @@
         try { groupMembersOf(el).forEach((m) => add(M.radioOptionText?.(m))); } catch {}
       }
       options = options
-        // A dropdown's opening "Select…" row is a prompt, not a choice. Stored
-        // as one it padded every saved dropdown answer with a fake option and
-        // showed the wrong count in the dashboard.
-        .filter((o) => !/^(select|choose|please\s+select|pick\s+one|--+)\b/i.test(o) && o !== "—")
+        .filter((o) => !PLACEHOLDER_OPTION_RE.test(o))
         .filter((o) => o.length <= 200)
         .slice(0, 50);
     }

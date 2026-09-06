@@ -48,6 +48,9 @@ async function fill(profile, settings = {}) {
         lastError: null,
         sendMessage(m, cb) {
           if (m?.type === "ZAPPLY_QUEUE_RESPONSES") window.__queued.push(...(m.responses || []));
+        // An edit is held for review before anything syncs, so a spec
+        // watching only the sync message sees nothing and fails.
+        if (m?.type === "ZAPPLY_HOLD_ANSWERS") window.__queued.push(...(m.items || []));
           const r = m?.type === "ZAPPLY_GET_SESSION" ? { ok: true, data: session }
             : m?.type === "ZAPPLY_CHECK" ? { ok: true, data: { duplicate: false } }
             : { ok: true, data: {} };
@@ -97,12 +100,32 @@ const BASE = {
 
   /* --- 3. editing a filled answer queues it for saving --- */
   const before = await page.evaluate(() => window.__queued.length);
+  /**
+   * Past the window that marks a control as ours.
+   *
+   * A fill claims each control it writes for 1.5s so the widget's own trailing
+   * events aren't read as typing. A real person releases that claim the instant
+   * they touch the control, because a trusted pointerdown or keydown does it —
+   * but `selectOption` sets the value and fires `input`/`change` with no
+   * pointer event at all, so nothing here releases it. Waiting is what makes
+   * this a test of capture rather than a test of the clock.
+   */
+  await page.waitForTimeout(1600);
   await page.selectOption("#q5", "No");
   await page.waitForTimeout(700);
   const queued = await page.evaluate(() => window.__queued.map((q) => ({ q: q.question, a: String(q.answer) })));
   const age = queued.filter((r) => r.q.toLowerCase().includes("18")).pop();
   check("editing an autofilled dropdown queues the new answer", age?.a === "No", JSON.stringify(queued.map((r) => `${r.q}=${r.a}`)));
-  check("the fill's own answers are queued too", before > 0, `${before} queued after the fill`);
+  /**
+   * The inverse of what this used to assert.
+   *
+   * It expected the fill's own answers to be queued as well. That is the
+   * behaviour the hold model exists to stop: a fill wrote the profile's values,
+   * offered every one of them back as though the applicant had typed it, and
+   * the unsaved list filled with the whole form after every click of Fill.
+   * Only an answer a person gave is held now.
+   */
+  check("the fill's own answers are not offered as the applicant's", before === 0, `${before} queued after the fill`);
   await page.close();
 }
 

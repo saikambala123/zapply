@@ -2754,18 +2754,39 @@
     const key = normalizeQuestion(question);
     if (!key) return null;
 
-    const exact = responses.find(
-      (r) => r.normalizedKey === key || (r.aliases || []).some((a) => normalizeQuestion(a) === key)
-    );
+    /**
+     * The stored key, and the key this build would derive from the same text.
+     *
+     * Matching only `normalizedKey` trusts that whatever wrote the record
+     * normalized it exactly as this code does. A record saved by an older
+     * build, imported, or written through the dashboard where the question was
+     * typed by hand carries a key from a different normalizer — and then the
+     * exact test can never hit, the fuzzy score lands around 0.67, and
+     * findSavedAnswer's own 0.82 floor rejects it. The answer is in the
+     * dashboard, plainly correct, and the applicant is asked the same question
+     * on every application anyway. Recomputing from `question` costs one pass
+     * over a short string and removes the whole failure mode.
+     */
+    const keysFor = (r) => {
+      const keys = [];
+      if (r.normalizedKey) keys.push(r.normalizedKey);
+      const recomputed = normalizeQuestion(r.question || "");
+      if (recomputed && !keys.includes(recomputed)) keys.push(recomputed);
+      (r.aliases || []).forEach((a) => {
+        const alias = normalizeQuestion(a);
+        if (alias && !keys.includes(alias)) keys.push(alias);
+      });
+      return keys;
+    };
+
+    const exact = responses.find((r) => r.answer && keysFor(r).includes(key));
     if (exact?.answer) return { ...exact, confidence: 1 };
 
     let best = null;
     let bestScore = threshold;
     responses.forEach((r) => {
       if (!r.answer) return;
-      const aliasScores = [r.normalizedKey || normalizeQuestion(r.question), ...(r.aliases || [])]
-        .map((a) => similarity(key, normalizeQuestion(a)));
-      const score = Math.max(...aliasScores, 0);
+      const score = Math.max(...keysFor(r).map((a) => similarity(key, a)), 0);
       if (score > bestScore) { bestScore = score; best = r; }
     });
     return best ? { ...best, confidence: bestScore } : null;

@@ -62,6 +62,9 @@ await page.addInitScript(({ profile }) => {
       lastError: null,
       sendMessage(m, cb) {
         if (m?.type === "ZAPPLY_QUEUE_RESPONSES") window.__queued.push(...(m.responses || []));
+        // An edit is held for review before anything syncs, so a spec
+        // watching only the sync message sees nothing and fails.
+        if (m?.type === "ZAPPLY_HOLD_ANSWERS") window.__queued.push(...(m.items || []));
         const r = m?.type === "ZAPPLY_GET_SESSION" ? { ok: true, data: session }
           : m?.type === "ZAPPLY_CHECK" ? { ok: true, data: { duplicate: false } }
           : { ok: true, data: {} };
@@ -138,10 +141,22 @@ check(
   "clicking it is what opened section after section of Education"
 );
 
-/* --- everything answered is offered for saving, whoever answered it --- */
+/* --- only an answer a person gave is offered for saving --- */
+/**
+ * This block asserted the opposite: that everything answered was offered for
+ * saving, whoever answered it. That is the behaviour the hold model exists to
+ * stop. A fill wrote "Social Media" into "How did you hear about us?" from the
+ * profile, offered it straight back as though the applicant had chosen it, and
+ * the unsaved list filled with the whole form on every click of Fill — so the
+ * one entry that really was theirs was buried among twenty that were not.
+ */
 const q = (needle) => out.queued.filter((r) => r.q.toLowerCase().includes(needle)).pop();
-check("a filled dropdown is queued for saving", Boolean(q("hear about")), JSON.stringify(out.queued.map((r) => r.q)));
-check("the queued source answer is the one on the form", q("hear about")?.a === out.hdyh, `queued "${q("hear about")?.a}" vs form "${out.hdyh}"`);
+check(
+  "the fill's own dropdown answer is not offered as the applicant's",
+  !q("hear about"),
+  JSON.stringify(out.queued.map((r) => r.q))
+);
+check("identity fields are still not queued", !q("first name") && !q("email"), JSON.stringify(out.queued.map((r) => r.q)));
 check(
   "identity fields are not queued as saved answers",
   !out.queued.some((r) => /email|phone number/i.test(r.q)),
