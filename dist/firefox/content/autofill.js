@@ -934,7 +934,13 @@
         // allowance discovering the same thing.
         const rowsNow = countRows(kind);
         const controlsNow = answerableCount();
-        if (rowsNow <= rowsSeen && controlsNow <= controlsSeen) return;
+        // Adding an ATS row must be proven by the row detector itself. Some
+        // Workday renders briefly increase the number of controls while the
+        // original row is rehydrating; treating that as a new row caused the
+        // Add button to be clicked twice and created duplicate Work Experience
+        // sections. If the real row count did not increase, stop rather than
+        // manufacture another section.
+        if (rowsNow <= rowsSeen) return;
         rowsSeen = rowsNow;
         controlsSeen = controlsNow;
       }
@@ -2885,7 +2891,11 @@
      * in the profile; the check belongs on every path into the queue, not on
      * one of them.
      */
-    if (field.rule && PROFILE_OWNED_KEYS.has(field.rule.key) && !isGenericChoiceGroup(field)) return false;
+    // A profile-owned field is still capturable after the applicant manually
+    // changes it. Provenance is enforced by __zapplyUserEdited / baseline, so
+    // extension writes never enter this path, while an explicit edit to a
+    // company, date, dropdown, radio, checkbox, contact field, etc. does.
+
 
     const answer = String(readValue(field) ?? "").trim();
     if (!answer) return false;
@@ -3044,9 +3054,11 @@
       // make this change — a late-rendering widget or the site's own script.
       if (!humanNearby) continue;
 
-      // For a field the profile owns, only a proven edit counts.
-      if (field.rule && PROFILE_OWNED_KEYS.has(field.rule.key) && !el.__zapplyUserEdited) continue;
-
+      // Any changed field can be a manual edit, including profile-backed work
+      // history/date fields. The earlier profile-owned guard made edits to
+      // extension-filled Work Experience, dates, radios and checkboxes vanish
+      // from Pending Saved Answers. Provenance is already established by the
+      // written-value/programmatic checks above.
       el.__zapplyUserEdited = true;
       try { recordAnswer(field, { userDriven: false }); } catch {}
     }
@@ -3231,7 +3243,6 @@
     });
     (state.allFields ?? []).forEach((field) => {
       if (field.kind === "file") return;
-      if (field.rule && PROFILE_OWNED_KEYS.has(field.rule.key)) return;
       captureOn(field);
     });
   }
@@ -3316,7 +3327,6 @@
     for (const field of state.allFields ?? []) {
       try {
         if (field.kind === "file") continue;
-        if (field.rule && PROFILE_OWNED_KEYS.has(field.rule.key)) continue;
         if (!document.contains(field.el)) continue;
         // The one test that matters: did a person put this here?
         if (!field.el.__zapplyUserEdited) continue;
@@ -3428,10 +3438,6 @@
      * questions that merely share a word with a profile rule, and refusing
      * them is what made demographic answers look like they never saved.
      */
-    if (rule && PROFILE_OWNED_KEYS.has(rule.key) && !isGenericChoiceGroup(field)) {
-      el.__zapplyIgnored = true;
-      return;
-    }
     captureOn(field);
   }
 

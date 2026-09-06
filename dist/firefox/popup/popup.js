@@ -199,7 +199,7 @@ async function heldCommand(type, question) {
    * added, it had.
    */
   if (saving) {
-    const refreshed = await send({ type: "ZAPPLY_GET_SESSION" });
+    const refreshed = await send({ type: "ZAPPLY_GET_SESSION", force: true });
     if (refreshed.ok) session = refreshed.data;
     if (res?.ok && res.synced === false) {
       setStatus(

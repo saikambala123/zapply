@@ -87,16 +87,55 @@
     return acc;
   }, {});
 
-  const datePart = (raw, part) => {
-    const value = String(raw ?? "").trim();
+  /** Parse supported profile date representations deterministically. */
+  const parseProfileDate = (raw) => {
+    const value = String(raw ?? "").replace(/\u00a0/g, " ").replace(/,/g, " ").replace(/\s+/g, " ").trim();
     if (!value) return null;
-    const m = value.match(/^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?/);
-    if (!m) return value;
-    if (part === "year") return m[1];
-    if (part === "month") return String(m[2]).padStart(2, "0");
-    if (part === "day") return m[3] ? String(Number(m[3])) : "1";
-    if (part === "monthName") return MONTH_NAMES[Math.max(0, Number(m[2]) - 1)] || null;
-    return value;
+
+    let m = value.match(/^(\d{4})[-/.](\d{1,2})(?:[-/.](\d{1,2}))?(?:T.*)?$/);
+    if (m) {
+      const year = Number(m[1]), month = Number(m[2]), day = m[3] ? Number(m[3]) : null;
+      if (year >= 1900 && year <= 2200 && month >= 1 && month <= 12 && (!day || (day >= 1 && day <= 31)))
+        return { year: String(year), month: String(month).padStart(2, "0"), day: day ? String(day).padStart(2, "0") : null };
+      return null;
+    }
+
+    m = value.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+    if (m) {
+      const month = Number(m[1]), day = Number(m[2]), year = Number(m[3]);
+      if (month >= 1 && month <= 12 && day >= 1 && day <= 31 && year >= 1900 && year <= 2200)
+        return { year: String(year), month: String(month).padStart(2, "0"), day: String(day).padStart(2, "0") };
+      return null;
+    }
+
+    m = value.match(/^(\d{1,2})[/-](\d{4})$/);
+    if (m) {
+      const month = Number(m[1]), year = Number(m[2]);
+      if (month >= 1 && month <= 12 && year >= 1900 && year <= 2200)
+        return { year: String(year), month: String(month).padStart(2, "0"), day: null };
+      return null;
+    }
+
+    m = value.match(/^(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\s+(\d{4})$/i);
+    if (m) {
+      const aliases = { jan:1, january:1, feb:2, february:2, mar:3, march:3, apr:4, april:4, may:5, jun:6, june:6, jul:7, july:7, aug:8, august:8, sep:9, sept:9, september:9, oct:10, october:10, nov:11, november:11, dec:12, december:12 };
+      const month = aliases[m[1].toLowerCase()], year = Number(m[2]);
+      if (month && year >= 1900 && year <= 2200) return { year: String(year), month: String(month).padStart(2, "0"), day: null };
+    }
+
+    m = value.match(/^(\d{4})$/);
+    if (m && Number(m[1]) >= 1900 && Number(m[1]) <= 2200) return { year: m[1], month: null, day: null };
+    return null;
+  };
+
+  const datePart = (raw, part) => {
+    const parsed = parseProfileDate(raw);
+    if (!parsed) return null;
+    if (part === "year") return parsed.year;
+    if (part === "month") return parsed.month;
+    if (part === "day") return parsed.day || "1";
+    if (part === "monthName") return parsed.month ? MONTH_NAMES[Number(parsed.month) - 1] || null : null;
+    return null;
   };
 
   /* ------------------------------------------------------------------ */
@@ -198,50 +237,19 @@
   };
 
   const dateForField = (raw, el) => {
-    const value = String(raw ?? "").trim();
-    if (!value) return null;
+    const parsed = parseProfileDate(raw);
+    if (!parsed) return null;
+    const type = String(el?.type || "").toLowerCase();
+    if (type === "month") return parsed.month ? `${parsed.year}-${parsed.month}` : null;
+    if (type === "date") return parsed.month ? `${parsed.year}-${parsed.month}-${parsed.day || "01"}` : null;
 
-    const type = (el?.type || "").toLowerCase();
-    if (type === "month") {
-      const m = value.match(/^(\d{4})-(\d{1,2})/);
-      return m ? `${m[1]}-${String(Number(m[2])).padStart(2, "0")}` : null;
-    }
-    if (type === "date") {
-      const m = value.match(/^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?/);
-      if (!m) return null;
-      const month = String(Number(m[2])).padStart(2, "0");
-      const day = String(Number(m[3] || 1)).padStart(2, "0");
-      return `${m[1]}-${month}-${day}`;
-    }
-
-    // Text date boxes are inconsistent across ATSs. Workday commonly uses
-    // MM/YYYY, while other portals use YYYY-MM or a full MM/DD/YYYY string.
-    // Never pass a bare year into an MM/YYYY field: that produces the visible
-    // "MM / 2021" / invalid-date state instead of a valid value. If the profile
-    // only contains a year, leave the field empty rather than inventing a month.
-    const hint = [
-      el?.getAttribute?.("placeholder"),
-      el?.getAttribute?.("aria-label"),
-      el?.getAttribute?.("data-automation-id"),
-    ].filter(Boolean).join(" ").toLowerCase();
-    const ym = value.match(/^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?/);
-    const yearOnly = value.match(/^\d{4}$/);
-
-    if (/mm\s*[/-]\s*yyyy|mm\s*\/\s*yyyy|month\s*\/?\s*year/.test(hint)) {
-      if (!ym) return null;
-      return `${String(Number(ym[2])).padStart(2, "0")}/${ym[1]}`;
-    }
-    if (/yyyy\s*[-/]\s*mm|year\s*[-/]\s*month/.test(hint)) {
-      if (!ym) return yearOnly ? value : null;
-      return `${ym[1]}-${String(Number(ym[2])).padStart(2, "0")}`;
-    }
-    if (/mm\s*[/-]\s*dd\s*[/-]\s*yyyy|month.*day.*year/.test(hint)) {
-      if (!ym || !ym[3]) return null;
-      return `${String(Number(ym[2])).padStart(2, "0")}/${String(Number(ym[3])).padStart(2, "0")}/${ym[1]}`;
-    }
-
-    if (ym) return `${ym[1]}-${String(Number(ym[2])).padStart(2, "0")}`;
-    return yearOnly ? value : null;
+    const hint = [el?.getAttribute?.("placeholder"), el?.getAttribute?.("aria-label"), el?.getAttribute?.("data-automation-id"), el?.getAttribute?.("name"), el?.id].filter(Boolean).join(" ").toLowerCase();
+    if (/\byear\b|yyyy|^yy$/.test(hint) && !/month|mm/.test(hint)) return parsed.year;
+    if (/mm\s*[/-]\s*yyyy|month\s*\/?\s*year/.test(hint)) return parsed.month ? `${parsed.month}/${parsed.year}` : null;
+    if (/yyyy\s*[-/]\s*mm|year\s*[-/]\s*month/.test(hint)) return parsed.month ? `${parsed.year}-${parsed.month}` : parsed.year;
+    if (/mm\s*[/-]\s*dd\s*[/-]\s*yyyy|month.*day.*year/.test(hint)) return parsed.month && parsed.day ? `${parsed.month}/${parsed.day}/${parsed.year}` : null;
+    if (/date|from|to|start|end|employment|experience/.test(hint)) return parsed.month ? `${parsed.month}/${parsed.year}` : null;
+    return parsed.month ? `${parsed.year}-${parsed.month}` : parsed.year;
   };
 
   const dateMonth = (raw) => datePart(raw, "monthName") || datePart(raw, "month");
@@ -883,6 +891,7 @@
       ],
       deny: [/previous|former|why|reason|reference/i],
       type: ["text"],
+      profileOnly: true,
       value: (p, _el, _label, index) => latestJob(p, index).company,
     },
     {
@@ -902,6 +911,7 @@
       ],
       deny: [/desired|applying|role you|reference|degree|education|school|university/i],
       type: ["text"],
+      profileOnly: true,
       value: (p, _el, _label, index) => latestJob(p, index).title,
     },
     {
@@ -910,6 +920,7 @@
       match: [/\bemployment\s*(type|status)\b/i, /\bjob\s*(type|status)\b/i, /\bwork\s*(type|status)\b/i],
       deny: [/current|previous|eligibility|authorized/i],
       type: ["text", "select", "radio"],
+      profileOnly: true,
       value: (p, _el, _label, index) => latestJob(p, index).employmentType,
     },
     {
@@ -959,6 +970,7 @@
         /\b(remote|hybrid|on[- ]site)\b.*\b(work|employment|location)\b/i,
       ],
       type: ["text", "select", "radio"],
+      profileOnly: true,
       value: (p, _el, _label, index) => latestJob(p, index).locationType,
       options: {
         "On-site": ["on-site", "onsite", "office"],
@@ -979,6 +991,7 @@
       ],
       deny: [/reference|emergency|job\s*post|posting\s*description|cover\s*letter/i],
       type: ["text", "textarea"],
+      profileOnly: true,
       value: (p, _el, _label, index) => latestJob(p, index).description,
     },
     {
@@ -989,6 +1002,7 @@
         /\bstart\b.*\b(experience|employment|work\s*history|job\s*history)\b/i,
       ],
       type: ["text", "date", "month"],
+      profileOnly: true,
       value: (p, el, _label, index) => dateForField(latestJob(p, index).startDate, el),
     },
     {
@@ -999,6 +1013,7 @@
         /\bend\b.*\b(experience|employment|work\s*history|job\s*history)\b/i,
       ],
       type: ["text", "date", "month"],
+      profileOnly: true,
       value: (p, el, _label, index) => dateForField(latestJob(p, index).endDate, el),
     },
     /* Split Month / Day / Year controls inside a work-experience block.
@@ -1013,6 +1028,7 @@
       ],
       deny: [/education|school|college|university|degree|graduat|birth|dob|gpa/i],
       type: ["select", "text", "number", "month", "date"],
+      profileOnly: true,
       value: (p, el, label, index) => {
         const job = jobAt(p, index);
         if (!job) return null;
@@ -1031,6 +1047,7 @@
       match: [/\bstart\s*date\s*month\b/i, /\bstart\s*month\b/i],
       deny: [/education|school|college|university/i],
       type: ["select", "text"],
+      profileOnly: true,
       value: (p, _el, _label, index) => dateMonth(latestJob(p, index).startDate),
       options: MONTH_SYNONYMS,
     },
@@ -1040,6 +1057,7 @@
       match: [/\bstart\s*date\s*year\b/i, /\bstart\s*year\b/i],
       deny: [/education|school|college|university/i],
       type: ["select", "text"],
+      profileOnly: true,
       value: (p, _el, _label, index) => dateYear(latestJob(p, index).startDate),
     },
     {
@@ -1048,6 +1066,7 @@
       match: [/\bend\s*date\s*month\b/i, /\bend\s*month\b/i],
       deny: [/education|school|college|university/i],
       type: ["select", "text"],
+      profileOnly: true,
       value: (p, _el, _label, index) => dateMonth(latestJob(p, index).endDate),
       options: MONTH_SYNONYMS,
     },
@@ -1057,6 +1076,7 @@
       match: [/\bend\s*date\s*year\b/i, /\bend\s*year\b/i],
       deny: [/education|school|college|university/i],
       type: ["select", "text"],
+      profileOnly: true,
       value: (p, _el, _label, index) => dateYear(latestJob(p, index).endDate),
     },
     {
@@ -1064,6 +1084,7 @@
       weight: 12,
       match: [/\bcurrently\s*(work|employed)\b/i, /\bcurrent\s*(job|role|position)\b/i, /\bthis\s*is\s*my\s*current\s*(job|role)\b/i],
       type: ["checkbox", "radio", "select"],
+      profileOnly: true,
       value: (p, _el, _label, index) => latestJob(p, index).current ? "Yes" : "No",
       options: { Yes: ["yes", "currently", "current", "true"], No: ["no", "not current", "false"] },
     },
