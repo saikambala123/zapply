@@ -175,7 +175,7 @@
       if (part) break;
     }
     if (!part) {
-      const machine = `${el?.getAttribute?.("name") || ""} ${el?.id || ""} ${el?.getAttribute?.("placeholder") || ""}`;
+      const machine = `${el?.getAttribute?.("name") || ""} ${el?.id || ""} ${el?.getAttribute?.("placeholder") || ""} ${el?.getAttribute?.("aria-label") || ""}`;
       part = partOf(machine.replace(/[_\-.]+/g, " "));
     }
     if (!part) {
@@ -195,6 +195,36 @@
       const s = segment.toLowerCase();
       if (/\b(end|to|thru|through|until|left|completion|graduat|expected)\b/.test(s)) { which = "end"; break; }
       if (/\b(start|from|begin|began|joined|joining|hire[d]?)\b/.test(s)) { which = "start"; break; }
+    }
+
+    // Workday often puts the start/end wording on a parent label while the
+    // individual Month/Day/Year inputs expose only their own machine name or
+    // aria-label. If the derived label contains only "Month" or "Year", use
+    // the nearest field wrapper as a second source. Without this, both the
+    // Start Date and End Date segments could resolve to the startDate profile
+    // value, leaving Workday with a mismatched range or an "Invalid Date"
+    // validation error on the end date.
+    if (!which) {
+      const nearby = [
+        el?.closest?.('[data-automation-id*="dateSection" i]'),
+        el?.closest?.('[data-automation-id*="dateInput" i]'),
+        el?.closest?.('[data-automation-id*="datePicker" i]'),
+        el?.closest?.('[role="group"]'),
+        el?.parentElement,
+      ].filter(Boolean);
+      const wrapperText = nearby
+        .map((node) => `${node.getAttribute?.("aria-label") || ""} ${node.getAttribute?.("data-automation-id") || ""} ${node.textContent || ""}`)
+        .join(" ")
+        .toLowerCase();
+      if (/\b(end|to|thru|through|until|left|completion|graduat|expected)\b/.test(wrapperText)) which = "end";
+      else if (/\b(start|from|begin|began|joined|joining|hire[d]?)\b/.test(wrapperText)) which = "start";
+    }
+
+    // Machine identifiers are useful when the visible label is generic.
+    if (!which) {
+      const machine = `${el?.getAttribute?.("name") || ""} ${el?.id || ""} ${el?.getAttribute?.("data-automation-id") || ""} ${el?.getAttribute?.("aria-label") || ""}`.toLowerCase();
+      if (/(end|to|until|completion|graduat)/.test(machine)) which = "end";
+      else if (/(start|from|begin|joined|hire)/.test(machine)) which = "start";
     }
 
     return { part, which };

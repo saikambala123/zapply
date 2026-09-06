@@ -897,7 +897,7 @@
      * applicant has to delete by hand, so the ceiling is now low and progress is
      * verified after every click.
      */
-    const MAX_ADDED_ROWS = { experience: 5, education: 3 };
+    const MAX_ADDED_ROWS = { experience: 25, education: 10 };
 
     const answerableCount = () => {
       try { return document.querySelectorAll(ANSWERABLE_PROBE).length; } catch { return 0; }
