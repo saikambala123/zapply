@@ -44,6 +44,11 @@
     manualSessionActive: false,
     completedRun: false,
     runId: 0,           // bumped per click; scopes "already written" to one pass
+    // Programmatic writes can cause trusted change/click events after a widget
+    // finishes rendering. Keep a short-lived provenance ledger outside the DOM
+    // so a Workday/Ashby re-render cannot turn Zapply's own value into a
+    // "manual" pending answer simply because the original node was replaced.
+    programmaticAnswers: new Map(), // fingerprint -> { answer, expiresAt }
   };
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -200,40 +205,60 @@
     const family = fields.filter((f) => keys.has(f.rule?.key));
     if (!family.length) return;
 
-    // 1. Headings win outright.
-    let anyHeading = false;
-    for (const field of family) {
-      const fromHeading = M.sectionContext?.(field.el)?.index;
-      if (Number.isInteger(fromHeading)) { field.index = fromHeading; anyHeading = true; }
-    }
-    const unresolved = family.filter((f) => !Number.isInteger(f.index));
-    if (!unresolved.length) { reconcileRows(family); return; }
-
-    // 2. Otherwise fall back to repeated containers around the anchor field.
+    // Repeated DOM rows are more reliable than a section heading. A page often
+    // has one outer "Work Experience" heading plus several cloned rows, so
+    // treating that outer heading as authoritative can give every row index 0.
+    // Once that happens the profile's first role is copied into every row.
     const counts = new Map();
     family.forEach((f) => counts.set(f.rule.key, (counts.get(f.rule.key) || 0) + 1));
     const anchorKey =
       anchorPreference.find((k) => (counts.get(k) || 0) > 1) ||
-      [...counts.entries()].sort((a, b) => b[1] - a[1]).filter(([, n]) => n > 1)[0]?.[0];
-    if (!anchorKey) {
+      [...counts.entries()].sort((a, b) => b[1] - a[1]).find(([, n]) => n > 1)?.[0];
+
+    let anchored = false;
+    if (anchorKey) {
+      const anchors = family.filter((f) => f.rule.key === anchorKey).map((f) => f.el);
+      const rows = M.rowsFromAnchors(anchors);
+      if (rows.length >= 2) {
+        anchored = true;
+        family.forEach((field) => {
+          const i = rows.findIndex((row) => row.contains(field.el));
+          if (i >= 0) field.index = i;
+        });
+      }
+    }
+
+    // Headings are the fallback for fields that are outside the repeated row
+    // container (for example an isolated "Currently employed" control).
+    // Never overwrite an index already established by the real row.
+    for (const field of family) {
+      if (Number.isInteger(field.index)) continue;
+      const fromHeading = M.sectionContext?.(field.el)?.index;
+      if (Number.isInteger(fromHeading)) field.index = fromHeading;
+    }
+
+    const unresolved = family.filter((f) => !Number.isInteger(f.index));
+    if (!unresolved.length) { reconcileRows(family); return; }
+
+    if (!anchored) {
       unresolved.forEach((f) => { if (!Number.isInteger(f.index)) f.index = 0; });
       reconcileRows(family);
       return;
     }
 
-    const anchors = family.filter((f) => f.rule.key === anchorKey).map((f) => f.el);
-    const rows = M.rowsFromAnchors(anchors);
-    if (rows.length < 2) {
-      unresolved.forEach((f) => { if (!Number.isInteger(f.index)) f.index = 0; });
-      reconcileRows(family);
-      return;
-    }
-
+    // If a field is in an anchored family but could not be placed, use the
+    // nearest row's index instead of falling back to role 0. This keeps a
+    // missing widget from stealing the first job's value.
+    const rows = M.rowsFromAnchors(
+      family.filter((f) => f.rule.key === anchorKey).map((f) => f.el)
+    );
     unresolved.forEach((field) => {
       const i = rows.findIndex((row) => row.contains(field.el));
-      field.index = i >= 0 ? i : 0;
+      if (i >= 0) field.index = i;
     });
 
+    // Truly isolated fields have no row context; only then is index 0 safe.
+    unresolved.forEach((f) => { if (!Number.isInteger(f.index)) f.index = 0; });
     reconcileRows(family);
   }
 
@@ -830,8 +855,33 @@
 
     const countRows = (kind) => {
       const keys = kind === "experience" ? EXPERIENCE_KEYS : EDUCATION_KEYS;
+      const preference = kind === "experience"
+        ? ["currentCompany", "currentTitle", "responsibilities"]
+        : ["school", "degree", "fieldOfStudy"];
       const fields = collectFields(adapter).filter((f) => keys.has(f.rule?.key));
       if (!fields.length) return 0;
+
+      // Count actual repeated anchors first. This is intentionally independent
+      // of `field.index`: the old implementation used the indexer to decide
+      // whether another row existed, while the indexer itself could collapse
+      // two pre-rendered rows to index 0. That feedback loop clicked "Add" and
+      // created a duplicate row containing the same profile data.
+      const counts = new Map();
+      fields.forEach((f) => counts.set(f.rule.key, (counts.get(f.rule.key) || 0) + 1));
+      const anchorKey = preference.find((k) => (counts.get(k) || 0) >= 1) ||
+        [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+      if (anchorKey) {
+        const anchors = fields.filter((f) => f.rule.key === anchorKey).map((f) => f.el);
+        if (anchors.length >= 2) {
+          const rows = M.rowsFromAnchors(anchors);
+          if (rows.length >= 2) return rows.length;
+          // Two anchors are two rows even if an unusual wrapper makes the row
+          // detector conservative. Never add another row merely because the
+          // container could not be identified.
+          return anchors.length;
+        }
+      }
+
       const indices = fields.map((f) => f.index).filter(Number.isInteger);
       return indices.length ? Math.max(...indices) + 1 : 1;
     };
@@ -1078,6 +1128,46 @@
    * offered back as a new unsaved answer. Every fill re-queued everything it
    * had filled.
    */
+  const PROGRAMMATIC_LEDGER_TTL = 15_000;
+
+  function provenanceKey(field, answer) {
+    let question = "";
+    try { question = primaryQuestion(field); } catch {}
+    const q = answerKey(question || field?.label || field?.el?.name || field?.el?.id || "");
+    const a = answerKey(Array.isArray(answer) ? answer.join(", ") : String(answer ?? ""));
+    return q && a ? `${q}::${a}` : "";
+  }
+
+  function rememberProgrammaticAnswer(field, answer) {
+    const key = provenanceKey(field, answer);
+    if (!key) return;
+    state.programmaticAnswers.set(key, { answer: String(answer ?? ""), expiresAt: Date.now() + PROGRAMMATIC_LEDGER_TTL });
+    // Keep the ledger tiny even on long-lived application tabs.
+    if (state.programmaticAnswers.size > 300) {
+      const now = Date.now();
+      for (const [k, v] of state.programmaticAnswers) {
+        if (v.expiresAt <= now) state.programmaticAnswers.delete(k);
+      }
+    }
+  }
+
+  function isKnownProgrammaticAnswer(field, answer) {
+    const key = provenanceKey(field, answer);
+    if (!key) return false;
+    const hit = state.programmaticAnswers.get(key);
+    if (!hit) return false;
+    if (hit.expiresAt <= Date.now()) {
+      state.programmaticAnswers.delete(key);
+      return false;
+    }
+    return true;
+  }
+
+  function clearProgrammaticAnswer(field, answer) {
+    const key = provenanceKey(field, answer);
+    if (key) state.programmaticAnswers.delete(key);
+  }
+
   function eachInGroup(el, fn) {
     let members = [el];
     try { members = groupMembersOf(el) || [el]; } catch {}
@@ -1261,6 +1351,10 @@
         // Zapply just wrote from banking the value it wrote.
         member.__zapplyUserEdited = false;
       });
+      // DOM nodes are disposable on modern ATS pages. Keep provenance by
+      // question+answer as well, so a trusted trailing event on a freshly
+      // rendered node cannot turn our own fill into a pending manual answer.
+      rememberProgrammaticAnswer(field, value);
     }
 
     // Each setter self-verifies; verifyField is an independent second opinion.
@@ -2756,6 +2850,11 @@
     if (el.__zapplyLastCaptured === answer) return false;
     if (!userDriven && matchesWritten(el, answer)) return false;
 
+    // This is the re-render-safe provenance guard. The element-local marker can
+    // disappear when Workday/Ashby replaces the node, but the short-lived ledger
+    // still knows that this exact question+answer came from Zapply.
+    if (isKnownProgrammaticAnswer(field, answer)) return false;
+
     /**
      * An answer Zapply wrote is never the applicant's answer.
      *
@@ -2828,6 +2927,7 @@
         .slice(0, 50);
     }
 
+    clearProgrammaticAnswer(field, answer);
     holdAnswer(field, {
       question,
       answer,

@@ -238,7 +238,10 @@ async function refreshPending() {
   const held = await heldAnswers();
   const pending = queued.length + held.length;
 
-  $("stat-answers").textContent = pending ? `${saved}+${pending}` : String(saved);
+  // This stat is the server-backed Saved Answers count. Pending edits are not
+  // saved yet and are shown separately below, so `12+5 saved answers` can
+  // never imply that five unsaved/AI-generated values are already stored.
+  $("stat-answers").textContent = String(saved);
 
   const btn = $("clear-pending");
   btn.disabled = false;
@@ -254,8 +257,8 @@ async function refreshPending() {
     // The buttons beside it say what the actions are; a third sentence
     // explaining them only pushed the list itself off the screen.
     const parts = [];
-    if (held.length) parts.push(`${held.length} unsaved`);
-    if (queued.length) parts.push(`${queued.length} waiting to sync`);
+    if (held.length) parts.push(`${held.length} manual edit${held.length === 1 ? "" : "s"} to review`);
+    if (queued.length) parts.push(`${queued.length} saved locally · waiting to sync`);
     $("pending-note").textContent = parts.join(" · ");
 
     // One click for the common case: several answers held across the steps of
@@ -292,6 +295,10 @@ function typeLabel(inputType) {
     case "textarea": return "long text";
     case "date": return "date";
     case "number": return "number";
+    case "url": return "URL";
+    case "tel": return "phone";
+    case "email": return "email";
+    case "month": return "month";
     default: return "text";
   }
 }
@@ -316,7 +323,10 @@ function renderEntryText(entry, { prefix = "" } = {}) {
 
   const q = document.createElement("span");
   q.className = "pending__q";
-  q.textContent = question || "(question not detected)";
+  const qLabel = document.createElement("b");
+  qLabel.textContent = "Question: ";
+  q.appendChild(qLabel);
+  q.appendChild(document.createTextNode(question || "(question not detected)"));
   if (!question) q.classList.add("pending__q--missing");
 
   const kind = document.createElement("span");
@@ -327,7 +337,10 @@ function renderEntryText(entry, { prefix = "" } = {}) {
   const a = document.createElement("span");
   a.className = "pending__a";
   const shown = answer.length > 110 ? `${answer.slice(0, 110)}\u2026` : answer;
-  a.textContent = `${prefix}${shown || "(no answer)"}`;
+  const aLabel = document.createElement("b");
+  aLabel.textContent = "Answer: ";
+  a.appendChild(aLabel);
+  a.appendChild(document.createTextNode(`${prefix}${shown || "(no answer)"}`));
 
   text.append(q, a);
 
