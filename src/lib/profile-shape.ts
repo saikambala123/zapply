@@ -280,28 +280,38 @@ const PRESENT_RE = /^(present|current(ly)?|now|ongoing|to date|till date|till no
 export function normalizeMonth(v: unknown): string {
   const s = str(v);
   if (!s || PRESENT_RE.test(s)) return "";
-  if (/^\d{4}-\d{2}$/.test(s)) return s;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s.slice(0, 7);
-  if (/^\d{4}$/.test(s)) return `${s}-01`;
+  const validYearMonth = (year: number, month: number) =>
+    year >= 1900 && year <= 2100 && month >= 1 && month <= 12;
+
+  const isoMonth = s.match(/^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?$/);
+  if (isoMonth) {
+    const year = Number(isoMonth[1]);
+    const month = Number(isoMonth[2]);
+    return validYearMonth(year, month) ? `${isoMonth[1]}-${String(month).padStart(2, "0")}` : "";
+  }
+  if (/^\d{4}$/.test(s)) {
+    const year = Number(s);
+    return year >= 1900 && year <= 2100 ? `${s}-01` : "";
+  }
 
   const named = s.toLowerCase().match(/\b([a-z]{3,9})\.?\s*,?\s*'?(\d{2,4})\b/);
   if (named) {
     const month = MONTHS[named[1]] ?? MONTHS[named[1].slice(0, 3)];
     if (month) {
       const year = named[2].length === 4 ? named[2] : Number(named[2]) <= 40 ? `20${named[2]}` : `19${named[2]}`;
-      return `${year}-${String(month).padStart(2, "0")}`;
+      return validYearMonth(Number(year), month) ? `${year}-${String(month).padStart(2, "0")}` : "";
     }
   }
 
   // 03/2021 or 3-2021
   const monthYear = s.match(/^(\d{1,2})[\/\-.](\d{4})$/);
-  if (monthYear && Number(monthYear[1]) >= 1 && Number(monthYear[1]) <= 12) {
+  if (monthYear && validYearMonth(Number(monthYear[2]), Number(monthYear[1]))) {
     return `${monthYear[2]}-${monthYear[1].padStart(2, "0")}`;
   }
 
   // 2021/03
   const yearMonth = s.match(/^(\d{4})[\/\-.](\d{1,2})$/);
-  if (yearMonth && Number(yearMonth[2]) >= 1 && Number(yearMonth[2]) <= 12) {
+  if (yearMonth && validYearMonth(Number(yearMonth[1]), Number(yearMonth[2]))) {
     return `${yearMonth[1]}-${yearMonth[2].padStart(2, "0")}`;
   }
 
@@ -310,8 +320,13 @@ export function normalizeMonth(v: unknown): string {
   if (full) {
     const a = Number(full[1]);
     const b = Number(full[2]);
-    const month = a > 12 && b <= 12 ? b : a <= 12 ? a : 1;
-    return `${full[3]}-${String(month).padStart(2, "0")}`;
+    let month = null;
+    if (a > 12 && b >= 1 && b <= 12) month = b;
+    else if (a >= 1 && a <= 12) month = a;
+    if (month !== null && validYearMonth(Number(full[3]), month)) {
+      return `${full[3]}-${String(month).padStart(2, "0")}`;
+    }
+    return "";
   }
 
   const year = s.match(/\b((?:19|20)\d{2})\b/);
@@ -374,6 +389,15 @@ export function toExperience(v: unknown) {
      * disappeared from the screen when the server echo replaced local state.
      */
     .filter((e) => e.company || e.title || e.description || e.startDate || e.endDate || e.location)
+    // Resume parsers and OCR frequently emit the same role twice. Treat an
+    // exact duplicate as one profile row so the extension cannot create two
+    // Workday entries containing identical employer/title/date data.
+    .filter((e, i, all) => {
+      const key = [e.company, e.title, e.location, e.startDate, e.endDate, e.current, e.description]
+        .map((v) => String(v ?? "").toLowerCase().replace(/\s+/g, " ").trim()).join("|");
+      return all.findIndex((x) => [x.company, x.title, x.location, x.startDate, x.endDate, x.current, x.description]
+        .map((v) => String(v ?? "").toLowerCase().replace(/\s+/g, " ").trim()).join("|") === key) === i;
+    })
     .slice(0, 25);
 }
 
@@ -416,6 +440,12 @@ export function toEducation(v: unknown) {
     })
     // Same reasoning as toExperience: don't discard a part-filled entry.
     .filter((e) => e.school || e.degree || e.fieldOfStudy || e.startDate || e.endDate || e.gpa)
+    .filter((e, i, all) => {
+      const key = [e.school, e.degree, e.fieldOfStudy, e.startDate, e.endDate, e.gpa]
+        .map((v) => String(v ?? "").toLowerCase().replace(/\s+/g, " ").trim()).join("|");
+      return all.findIndex((x) => [x.school, x.degree, x.fieldOfStudy, x.startDate, x.endDate, x.gpa]
+        .map((v) => String(v ?? "").toLowerCase().replace(/\s+/g, " ").trim()).join("|") === key) === i;
+    })
     .slice(0, 15);
 }
 
