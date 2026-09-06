@@ -275,7 +275,14 @@
 
     const hint = [el?.getAttribute?.("placeholder"), el?.getAttribute?.("aria-label"), el?.getAttribute?.("data-automation-id"), el?.getAttribute?.("name"), el?.id].filter(Boolean).join(" ").toLowerCase();
     if (/\byear\b|yyyy|^yy$/.test(hint) && !/month|mm/.test(hint)) return parsed.year;
-    if (/mm\s*[/-]\s*yyyy|month\s*\/?\s*year/.test(hint)) return parsed.month ? `${parsed.month}/${parsed.year}` : null;
+    if (/mm\s*[/-]\s*yyyy|month\s*\/?\s*year/.test(hint)) {
+      // Workday's masked MM/YYYY control cannot represent a year-only value.
+      // When the profile contains only `2022`, use January as the deterministic
+      // month rather than writing `2022`, which the mask renders as `/2022` and
+      // then rejects as `Invalid Date`. Normalized profiles normally already
+      // contain YYYY-MM, so this is only a defensive fallback.
+      return `${parsed.month || "01"}/${parsed.year}`;
+    }
     if (/yyyy\s*[-/]\s*mm|year\s*[-/]\s*month/.test(hint)) return parsed.month ? `${parsed.year}-${parsed.month}` : parsed.year;
     if (/mm\s*[/-]\s*dd\s*[/-]\s*yyyy|month.*day.*year/.test(hint)) return parsed.month && parsed.day ? `${parsed.month}/${parsed.day}/${parsed.year}` : null;
     if (/date|from|to|start|end|employment|experience/.test(hint)) return parsed.month ? `${parsed.month}/${parsed.year}` : null;

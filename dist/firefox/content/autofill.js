@@ -2544,6 +2544,45 @@
    * group is saved under the question it asks rather than under the answer that
    * was picked.
    */
+  /**
+   * Stable human-readable question for pending edits. Some Workday controls
+   * expose only `From`, `To`, `Month`, or `Year`; using the section heading alone
+   * makes several pending entries look identical and can cause the wrong saved
+   * answer to be reused. Add the field's semantic role and row number when the
+   * normal question resolver is too generic.
+   */
+  function pendingQuestion(field) {
+    const base = primaryQuestion(field);
+    const key = field?.rule?.key;
+    const index = Number.isInteger(field?.index) ? field.index + 1 : null;
+    const work = {
+      currentCompany: "Company", currentTitle: "Job Title", experienceLocation: "Location",
+      responsibilities: "Role Description", experienceStartDate: "Start Date",
+      experienceEndDate: "End Date", experienceStartMonth: "Start Date Month",
+      experienceStartYear: "Start Date Year", experienceEndMonth: "End Date Month",
+      experienceEndYear: "End Date Year", experienceDatePart: "Work Experience Date",
+      currentJob: "I currently work here", employmentType: "Employment Type",
+      experienceLocationType: "Location Type",
+    };
+    const education = {
+      school: "School or University", degree: "Degree", fieldOfStudy: "Field of Study",
+      educationLocation: "Education Location", graduationDate: "Graduation Date",
+      educationDatePart: "Education Date", educationStartMonth: "Education Start Month",
+      educationStartYear: "Education Start Year", educationEndMonth: "Education End Month",
+      educationEndYear: "Education End Year",
+    };
+    const label = work[key] || education[key];
+    if (!label) return base;
+    const prefix = work[key] ? "Work Experience" : "Education";
+    const contextual = `${prefix}${index ? ` ${index}` : ""} — ${label}`;
+    // Keep a real question when the form supplied one; only replace weak
+    // section/one-word labels such as `Work Experience 1` or `From`.
+    if (!base || base.length < 8 || /^(work experience|education)(?:\s+\d+)?$/i.test(base) || /^(from|to|month|year|day)$/i.test(base)) {
+      return contextual;
+    }
+    return base;
+  }
+
   function primaryQuestion(field) {
     const el = field?.el;
     const parts = String(field?.label ?? "").split("|").map((x) => x.trim()).filter(Boolean);
@@ -2946,7 +2985,7 @@
       if (!anyTicked) return false;
     }
 
-    const question = primaryQuestion(field);
+    const question = pendingQuestion(field);
     if (question.length < 5 || question.length > 300) return false;
 
     el.__zapplyLastCaptured = answer;

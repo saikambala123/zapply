@@ -866,6 +866,78 @@
     return null;
   }
 
+  /**
+   * Workday also has a single masked Month/Year input. It looks like one box
+   * with a placeholder such as `MM/YYYY`, but the mask consumes digits one at
+   * a time. Writing `01/2022` as one synthetic value can make Workday retain
+   * only `/2022`, producing the exact `Invalid Date: /2022` shown on the
+   * application. Feed the six digits through the editing pipeline individually
+   * so the mask inserts its own slash and updates its internal model.
+   */
+  function isMaskedMonthYearInput(el) {
+    if (!el || el.tagName !== "INPUT") return false;
+    const type = String(el.getAttribute?.("type") || el.type || "text").toLowerCase();
+    if (!["text", "tel", "number"].includes(type)) return false;
+    const hint = [
+      el.getAttribute?.("placeholder"),
+      el.getAttribute?.("aria-label"),
+      el.getAttribute?.("data-automation-id"),
+      el.getAttribute?.("name"),
+      el.getAttribute?.("id"),
+    ].filter(Boolean).join(" ");
+    return /(?:mm\s*[/-]\s*yyyy|month\s*[/-]\s*year|month.*year)/i.test(hint);
+  }
+
+  function setMaskedMonthYear(el, value) {
+    if (!isMaskedMonthYearInput(el)) return false;
+    const parts = dateParts(value);
+    if (!parts?.year) return false;
+    const month = String(parts.month || "1").padStart(2, "0");
+    const digits = `${month}${String(parts.year).padStart(4, "0")}`;
+    if (!/^\d{6}$/.test(digits)) return false;
+
+    ensureVisible(el);
+    try { el.focus?.({ preventScroll: true }); } catch { try { el.focus?.(); } catch {} }
+
+    const setter = nativeSetter(el);
+    const put = (v) => { if (setter) setter.call(el, v); else el.value = v; };
+    const tracker = el._valueTracker;
+    try {
+      put("");
+      if (tracker && typeof tracker.setValue === "function") tracker.setValue("");
+      fire(el, "input", "change");
+
+      // One digit at a time is intentional: Workday's mask advances from MM
+      // to YYYY only after it has received the second month digit.
+      for (const digit of digits) {
+        let inserted = false;
+        try { inserted = Boolean(document.execCommand?.("insertText", false, digit)); } catch {}
+        if (!inserted || !String(el.value ?? "").replace(/\D/g, "").endsWith(digits.slice(0, Math.min(digits.length, String(el.value ?? "").replace(/\D/g, "").length)))) {
+          const currentDigits = String(el.value ?? "").replace(/\D/g, "");
+          const nextDigits = (currentDigits + digit).slice(-6);
+          put(nextDigits.length > 2 ? `${nextDigits.slice(0, 2)}/${nextDigits.slice(2)}` : nextDigits);
+          if (tracker && typeof tracker.setValue === "function") tracker.setValue(currentDigits);
+          fire(el, "beforeinput", "input", "change");
+        }
+      }
+      const digitsNow = String(el.value ?? "").replace(/\D/g, "");
+      if (digitsNow === digits) {
+        try { el.blur?.(); } catch {}
+        fire(el, "blur", "focusout");
+        return true;
+      }
+
+      // A few Workday variants ignore execCommand but accept a final native
+      // assignment when the value is already in the mask's canonical shape.
+      put(`${month}/${parts.year}`);
+      if (tracker && typeof tracker.setValue === "function") tracker.setValue("");
+      fire(el, "beforeinput", "input", "change", "blur");
+      return String(el.value ?? "").replace(/\D/g, "") === digits;
+    } catch {
+      return false;
+    }
+  }
+
   function setSegmentedDate(el, value) {
     const segs = dateSegments(el);
     if (!segs) return false;
@@ -908,6 +980,10 @@
   function setTextValue(el, value) {
     const text = String(value ?? "");
     if (!text) return false;
+
+    // Workday may render Month/Year as one masked input. Handle that before
+    // generic text assignment so the mask cannot turn `01/2022` into `/2022`.
+    if (setMaskedMonthYear(el, text)) return true;
 
     // A date split across MM / DD / YYYY boxes is written segment by segment.
     if (setSegmentedDate(el, text)) return true;
@@ -1055,6 +1131,9 @@
   function retypeValue(el, value) {
     const text = String(value ?? "");
     if (!text) return false;
+
+    // A single masked Month/Year input needs digit-by-digit entry as well.
+    if (setMaskedMonthYear(el, text)) return true;
 
     // A segmented date is rewritten segment by segment; retyping the whole
     // string at one segment is what produced "Invalid Date: /2019".
