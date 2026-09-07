@@ -23,7 +23,6 @@ const TOGGLES = [
   // is a draft the applicant has to read before submitting.
   ["aiAnswers", "Answer unknown questions with AI", false],
   ["overwriteExisting", "Replace answers already in the form", false],
-  ["autoAttachResume", "Attach my resume automatically", false],
   ["eeoFallbackDecline", "Answer EEO questions with “decline to self-identify”", false],
 ];
 

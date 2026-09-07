@@ -949,35 +949,100 @@
    * only records what its own editing pipeline saw. Assignment is the fallback
    * for widgets that refuse the command.
    */
+  /**
+   * One keystroke, as close to a person's as script can get.
+   *
+   * Workday's date segment keeps its own buffer and fills it from `keydown`.
+   * Assigning `.value`, or inserting text without saying which key produced it,
+   * updates what the applicant can see and nothing else — which is how a box
+   * plainly reading 01/2017 still reported "The field From is required and must
+   * have a value" when Save and Continue validated against that buffer.
+   *
+   * The digit is offered to the widget first. Only if its own handler declines
+   * to write anything does this put the character in, so a widget that already
+   * typed it does not end up with it twice.
+   */
+  function typeDigit(node, ch) {
+    const codePoint = 48 + Number(ch);
+    const keyInit = {
+      key: ch, code: `Digit${ch}`, keyCode: codePoint, which: codePoint,
+      bubbles: true, cancelable: true,
+    };
+
+    const before = String(node.value ?? "");
+    const proceed = node.dispatchEvent(new KeyboardEvent("keydown", keyInit));
+
+    if (proceed && String(node.value ?? "") === before) {
+      let inserted = false;
+      if (!node.readOnly) {
+        try {
+          inserted = Boolean(document.execCommand && document.execCommand("insertText", false, ch)) &&
+            String(node.value ?? "") !== before;
+        } catch {}
+      }
+      if (!inserted && !node.readOnly) {
+        try {
+          node.dispatchEvent(new InputEvent("beforeinput", { data: ch, inputType: "insertText", bubbles: true, cancelable: true }));
+          const writer = nativeSetter(node);
+          const next = before + ch;
+          if (writer) writer.call(node, next); else node.value = next;
+          node.dispatchEvent(new InputEvent("input", { data: ch, inputType: "insertText", bubbles: true }));
+        } catch {}
+      }
+    }
+
+    node.dispatchEvent(new KeyboardEvent("keyup", keyInit));
+  }
+
+  /** Empty a segment the way Backspace would, buffer included. */
+  function clearSegment(node) {
+    if (!String(node.value ?? "")) return;
+    const keyInit = { key: "Backspace", code: "Backspace", keyCode: 8, which: 8, bubbles: true, cancelable: true };
+
+    for (let guard = 0; guard < 8 && String(node.value ?? ""); guard++) {
+      const before = String(node.value ?? "");
+      try { node.setSelectionRange?.(0, before.length); } catch {}
+      const proceed = node.dispatchEvent(new KeyboardEvent("keydown", keyInit));
+      if (proceed && String(node.value ?? "") === before && !node.readOnly) {
+        let deleted = false;
+        try { deleted = Boolean(document.execCommand && document.execCommand("delete")); } catch {}
+        if (!deleted || String(node.value ?? "") === before) {
+          try {
+            const writer = nativeSetter(node);
+            if (writer) writer.call(node, ""); else node.value = "";
+          } catch {}
+        }
+        try { node.dispatchEvent(new InputEvent("input", { inputType: "deleteContentBackward", bubbles: true })); }
+        catch { fire(node, "input"); }
+      }
+      node.dispatchEvent(new KeyboardEvent("keyup", keyInit));
+      if (String(node.value ?? "") === before) break;   // nothing is shifting; stop
+    }
+  }
+
   function writeSegment(seg, digits) {
     const { node, kind } = seg;
     const cap = segmentCap(node, kind);
     const text = String(digits).replace(/\D+/g, "").padStart(kind === "year" ? 4 : 2, "0").slice(-cap);
     if (!text) return false;
 
-    const previous = String(node.value ?? "");
     try {
       ensureVisible(node);
       node.focus?.({ preventScroll: true });
     } catch {}
 
-    let typed = false;
-    try {
-      node.setSelectionRange?.(0, previous.length);
-      if (!previous && typeof node.select === "function") node.select();
-      if (document.execCommand && document.execCommand("insertText", false, text)) {
-        typed = String(node.value ?? "") === text;
-      }
-    } catch {}
+    // A segment already holding "09" would otherwise end up with "0903" and
+    // clamp back to something nobody asked for.
+    clearSegment(node);
+    for (const ch of text) typeDigit(node, ch);
 
-    if (!typed) {
+    // Whatever the widget did with those keystrokes, the box must end up
+    // showing the right thing.
+    if (String(node.value ?? "") !== text && !node.readOnly) {
       try {
         const writer = nativeSetter(node);
-        const put = (v) => { if (writer) writer.call(node, v); else node.value = v; };
-        // Clear first: a segment that already holds "09" would otherwise end up
-        // with "0903" and clamp back to something nobody asked for.
-        if (previous) { put(""); fire(node, "input"); }
-        put(text);
+        if (writer) writer.call(node, text); else node.value = text;
+        fire(node, "input");
       } catch {}
     }
 
@@ -987,7 +1052,7 @@
       const tracker = node._valueTracker;
       if (tracker && typeof tracker.setValue === "function") tracker.setValue(text === "" ? "x" : "");
     } catch {}
-    fire(node, "keydown", "beforeinput", "input", "keyup", "change");
+    fire(node, "change");
 
     return String(node.value ?? "") === text;
   }

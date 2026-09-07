@@ -46,8 +46,11 @@ const PROFILE = {
       startDate: "2022-03", endDate: "2025-01", current: false, description: "Ran the platform." },
     { title: "DevOps Engineer", company: "One Trust LLC", location: "Austin, TX",
       startDate: "2021-06", endDate: "2022-02", current: false, description: "Managed Azure." },
+    { title: "Data Engineer", company: "Lenora Systems Inc", location: "Hyderabad, India",
+      startDate: "2017-01", endDate: "2018-06", current: false, description: "Built dashboards." },
   ],
-  education: [], documents: [],
+  education: [],
+  documents: [{ kind: "resume", name: "cv.pdf", isDefault: true, dataUrl: "data:application/pdf;base64,JVBERi0=" }],
 };
 
 const results = [];
@@ -156,6 +159,58 @@ check(
   Boolean(dateHeld[0]?.q && dateHeld[0].q.length >= 5),
   JSON.stringify(dateHeld)
 );
+
+/* ================================================================== */
+/*  A widget that only believes keystrokes                             */
+/* ================================================================== */
+
+/**
+ * Work Experience 3's segments keep their own buffer and fill it only from
+ * `keydown`. Reported as: `From` reading 01/2017 while Save and Continue said
+ * "The field From is required and must have a value." The box had the date; the
+ * buffer Workday validates against was empty, because the fill assigned the
+ * value and sent key events carrying no key.
+ */
+console.log("\na widget that fills its buffer from keystrokes");
+{
+  const display = {
+    from: `${await v("w3f-m")}/${await v("w3f-y")}`,
+    to: `${await v("w3to-m")}/${await v("w3to-y")}`,
+  };
+  const buffers = await page.evaluate(() => ({ ...window.__buffers }));
+  const errors = await page.evaluate(() => {
+    window.__validateStrict();
+    return ["w3f-err", "w3to-err"].map((id) => document.getElementById(id).textContent).filter(Boolean);
+  });
+
+  check("the boxes show the dates", display.from === "01/2017" && display.to === "06/2018", JSON.stringify(display));
+  check(
+    "and the widget's own buffer holds them too",
+    buffers["w3f-m"] === "01" && buffers["w3f-y"] === "2017" &&
+    buffers["w3to-m"] === "06" && buffers["w3to-y"] === "2018",
+    JSON.stringify(buffers)
+  );
+  check("so Save and Continue raises no required-field error", errors.length === 0, errors.join(" | "));
+}
+
+/* ================================================================== */
+/*  Uploads are left alone                                             */
+/* ================================================================== */
+
+console.log("\nthe application-documents upload");
+{
+  const upload = await page.evaluate(() => ({
+    files: document.getElementById("resume-file").files?.length ?? 0,
+    marked: [...document.querySelectorAll(".zapply-needs-you")]
+      .map((n) => n.id || n.getAttribute("data-automation-id") || n.tagName),
+  }));
+  check("no document is attached by the fill", upload.files === 0, `${upload.files} file(s) attached`);
+  check(
+    "and the upload is not flagged as needing an answer",
+    !upload.marked.some((id) => /resume-file|fileUpload|select-files/i.test(id)),
+    JSON.stringify(upload.marked)
+  );
+}
 
 await browser.close();
 

@@ -86,13 +86,19 @@ async function fill({ settings = {}, profile = BASE_PROFILE, responses = [], pre
   };
 }
 
-/* ---------------- autoAttachResume ---------------- */
+/* ---------------- uploads ---------------- */
+/* The fill never attaches a document. Choosing the right resume — the right
+   version, the right cover letter, the right file when a page asks for several
+   — is the applicant's, and a page that rejects the file leaves a required
+   field looking answered when nothing was attached. `autoAttachResume` used to
+   switch this on; it is gone, and the setting being present must not bring the
+   behaviour back. */
 let run = await fill({});
-check("resume not attached by default", (await run.files()) === 0);
+check("no document is attached by default", (await run.files()) === 0);
 await run.close();
 
 run = await fill({ settings: { autoAttachResume: true } });
-check("resume attached when the setting is on", (await run.files()) === 1);
+check("and none is attached even with the old setting on", (await run.files()) === 0);
 await run.close();
 
 /* ---------------- eeoFallbackDecline ---------------- */

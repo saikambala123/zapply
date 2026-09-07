@@ -1380,12 +1380,20 @@
         ok = M.setCheckboxValue(el, value, rule?.options, field.label);
       } else if (field.kind === "file") {
         /**
-         * An attachment is only ever set through DataTransfer, and only when
-         * the applicant has switched attachments on. The file dialog is never
-         * opened — a résumé chooser appearing over the form during a fill is
-         * not something the applicant asked for.
+         * An attachment is never written by the fill.
+         *
+         * The résumé is the one thing on an application the applicant checks
+         * before it goes: the right version, the right cover letter, the right
+         * file when a page asks for several. Pushing a document into whatever
+         * upload a page exposes takes that decision away, and a page that
+         * rejects the file — wrong type, over its size limit, or a drop zone
+         * that never registered it — leaves a required field looking answered
+         * when nothing has been attached at all.
+         *
+         * `setFileValue` is left in the matcher for a deliberate, explicit
+         * attach; nothing in the automatic pass calls it.
          */
-        ok = state.session?.settings?.autoAttachResume === true && M.setFileValue(el, value);
+        ok = false;
       } else {
         ok = M.setTextValue(el, String(value));
         if (!ok) { await sleep(60); ok = M.setTextValue(el, String(value)); }
@@ -1481,6 +1489,17 @@
     // run — a re-scan, a reconcile, the AI pass — may plan it a second time.
     if (writtenThisRun(el)) return { status: "already", key: field.rule?.key ?? null };
 
+    /**
+     * Nothing in the fill touches an upload.
+     *
+     * Not written, and not counted as a gap either — whichever rule matched it
+     * and whatever the profile holds. Attaching the right document is the one
+     * decision on an application worth leaving to the applicant, and a dashed
+     * "needs your answer" outline over a Workday upload only reads as Zapply
+     * having tried and failed at it.
+     */
+    if (kind === "file") return { status: "skipped", key: field.rule?.key ?? null };
+
     // An answered question is finished. Zapply does not second-guess a value
     // that is already in the form — whether the applicant typed it, the portal
     // prefilled it, or an earlier run put it there. Running autofill again
@@ -1534,25 +1553,17 @@
       const value = profileValue;
 
       if (value === "__RESUME__" || value === "__COVER_LETTER__") {
-        // Documents are attached only when the applicant has asked for that.
-        // Silently pushing a résumé into whatever file input a page exposes is
-        // not something an autofill should decide on its own.
-        if (kind !== "file") return { status: "skipped", key: rule.key };
-        // "unmatched" here used to mean the same thing it means everywhere
-        // else: dashed-outline the field and count it in the on-page "N
-        // fields need your answer" pill. For a resume/cover-letter field with
-        // the toggle off that isn't a gap to flag — it's the applicant's
-        // standing choice not to have Zapply touch attachments — so with the
-        // toggle off this is now a silent "skipped" like any other field
-        // Zapply deliberately leaves alone. It only becomes "unmatched" (and
-        // worth surfacing) once the toggle is on and there is genuinely no
-        // document to attach.
-        if (settings?.autoAttachResume !== true) return { status: "skipped", key: rule.key };
-        const wantKind = value === "__RESUME__" ? "resume" : "coverLetter";
-        const docs = profile.documents ?? [];
-        const doc = docs.find((d) => d.kind === wantKind && d.isDefault) || docs.find((d) => d.kind === wantKind);
-        if (!doc) return { status: "unmatched", key: rule.key };
-        return { status: "fill", key: rule.key, value: doc, rule, source: "profile" };
+        /**
+         * Upload controls are left alone, and left unmarked.
+         *
+         * Attaching is the applicant's call, so the fill does not write here.
+         * Marking it "needs your answer" was no better: the dashed outline
+         * appeared over the Select files link on a Workday upload the applicant
+         * was already going to fill in themselves, next to Workday's own red
+         * required-field border, which reads as Zapply having tried and failed.
+         * A field nothing is going to write is not a gap to report.
+         */
+        return { status: "skipped", key: rule.key };
       }
 
       if (value) return { status: "fill", key: rule.key, value, rule, source: "profile" };
