@@ -119,6 +119,47 @@
   }
 
   /**
+   * Which entry of a repeated section this control belongs to, if any.
+   *
+   * "I currently work here" is asked once per job, and the three boxes on a
+   * three-row form are three questions with three different answers — not one
+   * question with three options. Everything that groups choice controls used to
+   * put them together anyway, because they share a `name` or sit inside one
+   * `[role="group"]`, and the consequences ran both ways: only the first box
+   * was ever collected as a field, so rows two and three were never answered at
+   * all; and when the group *was* written to, every box in it was set at once,
+   * ticking "I currently work here" against jobs the applicant left years ago.
+   *
+   * Returns null for a control that is not inside a numbered repeated block, so
+   * ordinary radio and checkbox groups are unaffected.
+   */
+  const ROW_WRAPPER_RE =
+    /(work\s*experience|experience|employment|work\s*history|job\s*history|education|school)[^a-z0-9]{0,3}(\d{1,2})\b/i;
+
+  function repeatedRowKey(el) {
+    if (!el) return null;
+    try {
+      let node = el;
+      for (let depth = 0; node && depth < 10; depth++, node = node.parentElement) {
+        if (node === document.body) break;
+        const machine = `${node.getAttribute?.("data-automation-id") || ""} ${node.id || ""}`;
+        const hit = machine.match(ROW_WRAPPER_RE);
+        if (hit) return `${hit[1].toLowerCase().replace(/\s+/g, "")}#${Number(hit[2])}`;
+      }
+    } catch {}
+
+    // No row wrapper in the markup — fall back to the numbered heading above it.
+    try {
+      const section = sectionContext(el);
+      if (section && Number.isInteger(section.index)) {
+        const stem = String(section.title || "").toLowerCase().replace(/[^a-z]+/g, "");
+        if (stem) return `${stem}#${section.index}`;
+      }
+    } catch {}
+    return null;
+  }
+
+  /**
    * Is this heading a section header for the form, or just part of the page
    * around it?
    *
@@ -1657,6 +1698,16 @@
       ? `[role="${role}"]`
       : `input[type="${type}"]`;
 
+    // A group may never straddle two entries of a repeated section. See
+    // `repeatedRowKey`: three "I currently work here" boxes are three
+    // questions, and grouping them let one answer tick all three.
+    const myRow = repeatedRowKey(el);
+    const sameRow = (members) => {
+      if (!myRow) return members;
+      const kept = members.filter((m) => repeatedRowKey(m) === myRow);
+      return kept.length > 1 ? kept : [el];
+    };
+
     // 1. A shared `name` is the definitive grouping when the page provides one.
     const name = el.getAttribute("name");
     if (name) {
@@ -1664,7 +1715,11 @@
         const byName = Array.from(
           document.querySelectorAll(`${kindSelector}[name="${CSS.escape(name)}"]`)
         );
-        if (byName.length > 1) return byName;
+        if (byName.length > 1) {
+          const scoped = sameRow(byName);
+          if (scoped.length > 1) return scoped;
+          if (myRow) return [el];
+        }
       } catch {}
     }
 
@@ -1676,7 +1731,11 @@
       const box = el.closest(containerSelector);
       if (box) {
         const members = Array.from(box.querySelectorAll(kindSelector));
-        if (members.length > 1) return members;
+        if (members.length > 1) {
+          const scoped = sameRow(members);
+          if (scoped.length > 1) return scoped;
+          if (myRow) return [el];
+        }
       }
     } catch {}
 
@@ -1693,7 +1752,12 @@
         if (members.length > 1) {
           // Guard against scooping up a neighbouring question: a real group's
           // members share a parent chain of the same depth.
-          if (members.length <= 25) return members;
+          if (members.length <= 25) {
+            const scoped = sameRow(members);
+            if (scoped.length > 1) return scoped;
+            if (myRow) return [el];
+            return members;
+          }
           break;
         }
       }
@@ -2719,6 +2783,22 @@
       clean(`${radioOptionText(cb)} ${cb.getAttribute("aria-label") || ""} ${cb.value || ""}`)
     );
     const rawAnswer = String(Array.isArray(answer) ? answer.join(", ") : answer).trim();
+
+    /**
+     * Every box in this group says the same thing.
+     *
+     * Then the label cannot pick one out, and this is not one question with
+     * several options — it is one question repeated once per row, which is what
+     * "I currently work here" is on a form with three jobs. Writing the answer
+     * across the whole group ticked it against every job the applicant had ever
+     * held. Answer the box that was actually asked about and leave the rest.
+     */
+    if (new Set(groupLabels.map(norm).filter(Boolean)).size <= 1) {
+      const shouldCheck = !/^(no|false|unchecked|not selected|0|none)$/i.test(rawAnswer);
+      setChecked(el, shouldCheck);
+      return checked(el) === shouldCheck;
+    }
+
     const answerId = eeoId(rawAnswer, hint);
     const optionIds = groupLabels.map((t) => eeoId(t, hint));
     const isDisclosureGroup = optionIds.filter(Boolean).length >= 2;
@@ -3051,6 +3131,7 @@
     deriveLabel,
     groupLabel,
     sectionContext,
+    repeatedRowKey,
     headingIndex,
     rowsFromAnchors,
     isParentOption,

@@ -73,6 +73,41 @@
   const latestJob = (p, index = 0) => jobAt(p, index) ?? {};
   const latestSchool = (p, index = 0) => schoolAt(p, index) ?? {};
 
+  /**
+   * Which row, if any, may say "I currently work here". Exactly one.
+   *
+   * The box used to be answered from each job's own `current` flag, so a
+   * profile carrying that flag on more than one role ticked it on every one —
+   * telling the employer the applicant works three jobs at once, and, because
+   * Workday drops the To date for a role marked current, wiping the end date
+   * of their entire employment history in the process. A resume parser
+   * produces exactly that whenever "Present" or "Till Date" appears against
+   * more than one entry, which overlapping and contract roles routinely do.
+   *
+   * The list is newest first, so the first flagged role is the one to tick.
+   */
+  const currentJobIndex = (p) => {
+    const list = p?.experience ?? [];
+    const flagged = list.findIndex((job) => job?.current);
+    if (flagged >= 0) return flagged;
+
+    /**
+     * Nothing is flagged, but the most recent role has a start date and no end
+     * date. That role is ongoing, and it is *already* being treated that way —
+     * the To box for a job with no end date is deliberately left blank. Not
+     * ticking the box as well left a required field empty with nothing on the
+     * form to explain why, which is a validation error the applicant cannot
+     * clear without working out what Zapply meant.
+     *
+     * Only the newest role is read this way. An older job missing its end date
+     * is missing data, not a job the applicant still holds.
+     */
+    const newest = list[0];
+    return newest?.startDate && !newest?.endDate ? 0 : -1;
+  };
+
+  const isCurrentJobRow = (p, index) => currentJobIndex(p) === (Number(index) || 0);
+
   const MONTH_NAMES = ["January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December"];
 
@@ -1119,7 +1154,13 @@
         if (!job) return null;
         const { part, which } = dateSlot(label, el);
         const raw = which === "end" ? job.endDate : job.startDate;
-        if (which === "end" && (job.current || !job.endDate)) return null;   // still employed
+        // Blank only for the row that actually says "I currently work here",
+        // and for a row whose end date the profile simply does not hold. Asking
+        // `job.current` here disagreed with the checkbox as soon as a profile
+        // flagged two roles current: the box was ticked on one row while the To
+        // date was dropped from all of them, so a job with a perfectly good end
+        // date on record reached the employer with the field empty.
+        if (which === "end" && (isCurrentJobRow(p, index) || !job.endDate)) return null;
         if (!raw) return null;
         if (!part) return dateForField(raw, el);
         return valueForSlot(raw, part, el);
@@ -1170,7 +1211,7 @@
       match: [/\bcurrently\s*(work|employed)\b/i, /\bcurrent\s*(job|role|position)\b/i, /\bthis\s*is\s*my\s*current\s*(job|role)\b/i],
       type: ["checkbox", "radio", "select"],
       profileOnly: true,
-      value: (p, _el, _label, index) => latestJob(p, index).current ? "Yes" : "No",
+      value: (p, _el, _label, index) => (isCurrentJobRow(p, index) ? "Yes" : "No"),
       options: { Yes: ["yes", "currently", "current", "true"], No: ["no", "not current", "false"] },
     },
     {

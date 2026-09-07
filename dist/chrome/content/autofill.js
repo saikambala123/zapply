@@ -845,7 +845,19 @@
               if (container && !container.dataset.zapplyGroupKey) {
                 container.dataset.zapplyGroupKey = `g${Math.random().toString(36).slice(2)}`;
               }
-              const groupKey = `${role}|${name || container?.dataset?.zapplyGroupKey || `single-${fields.length}`}`;
+              /**
+               * The row is part of the group's identity.
+               *
+               * A shared `name`, or one `[role="group"]` around the whole
+               * section, collapsed every row's "I currently work here" into a
+               * single field — so only the first job was ever asked about and
+               * the other rows were never answered. Two boxes in two different
+               * Work Experience blocks are two questions.
+               */
+              const row = M.repeatedRowKey?.(el) || "";
+              const groupKey =
+                `${role}|${name || container?.dataset?.zapplyGroupKey || `single-${fields.length}`}` +
+                (row ? `|${row}` : "");
               if (fields.some((f) => f._groupKey === groupKey && f.el !== el)) return;
               el.dataset.zapplyGroup = el.dataset.zapplyGroup || (name || container?.dataset?.zapplyGroupKey || `g${fields.length}`);
               const label = M.deriveLabel(el);
