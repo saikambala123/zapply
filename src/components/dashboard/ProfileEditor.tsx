@@ -352,6 +352,28 @@ export default function ProfileEditor({
   const removeRow = (key: string, i: number) =>
     setP((prev: any) => ({ ...prev, [key]: prev[key].filter((_: any, idx: number) => idx !== i) }));
 
+  /**
+   * "I currently work here" belongs to one role.
+   *
+   * Nothing stopped it being ticked on several, and a resume import sets it on
+   * every role whose dates read "Present" or "Till Date" — which overlapping
+   * and contract roles routinely do. An application form then received the
+   * claim against each of them, and Workday, which drops the end date of any
+   * role marked current, blanked the applicant's whole employment history.
+   *
+   * Ticking one row clears the rest, so what the profile stores is what the
+   * form will say. Untick freely: this only clears others when a row is ticked.
+   */
+  const setCurrentRole = (i: number, checked: boolean) =>
+    setP((prev: any) => ({
+      ...prev,
+      experience: (prev.experience ?? []).map((row: any, idx: number) =>
+        idx === i
+          ? { ...row, current: checked, ...(checked ? { endDate: "" } : {}) }
+          : (checked ? { ...row, current: false } : row)
+      ),
+    }));
+
   return (
     <div className="space-y-6">
       <header className="flex flex-wrap items-end justify-between gap-4">
@@ -495,7 +517,7 @@ export default function ProfileEditor({
                     <div>
                       <Field label="End" type="month" value={x.endDate} onChange={(v) => updateRow("experience", i, { endDate: v })} />
                       <label className="mt-2 flex items-center gap-2 text-[13px] text-ink-soft">
-                        <input type="checkbox" checked={!!x.current} onChange={(e) => updateRow("experience", i, { current: e.target.checked })} />
+                        <input type="checkbox" checked={!!x.current} onChange={(e) => setCurrentRole(i, e.target.checked)} />
                         I currently work here
                       </label>
                     </div>
