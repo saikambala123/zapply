@@ -22,9 +22,22 @@ const ANSWER_LIKE =
   /^(?:yes|no|y|n|true|false|maybe|other|none|n\/?a|not applicable|unsure|male|female|man|woman|non[-\s]?binary|transgender|prefer not to (?:say|answer|disclose|respond|specify)|i (?:do not|don't|dont) (?:wish|want|choose) to (?:answer|say|disclose|self[-\s]?identify|specify)|(?:i )?(?:decline|choose not|do not wish|don't wish) to (?:self[-\s]?identify|answer|disclose|specify|state)|declined? to self[-\s]?identify|do not wish to disclose|select(?:\s*an?\s*option|\s*one)?|please select|choose(?:\s*an?\s*option|\s*one)?)\s*[.?!*]?$/i;
 
 /** Is this string usable as the question half of a saved answer? */
+/**
+ * The ceiling here has to match the extension's `QUESTION_MAX`.
+ *
+ * It was 300, and the extension capped questions at 300 too, so nothing ever
+ * hit it. Once the extension started keeping long questions — Greenhouse's
+ * compliance questions run to 400 and beyond — this rejected every one of
+ * them. A rejected answer is not in `savedKeys`, so the extension never
+ * confirms it, never removes it from the local queue, and Sync now reports
+ * failure and leaves the count exactly where it was, however many times it is
+ * pressed. That is the "Sync now does nothing" report.
+ */
+const QUESTION_MAX = 600;
+
 function isRealQuestion(q: string) {
   const text = q.trim();
-  if (text.length < 5 || text.length > 300) return false;
+  if (text.length < 5 || text.length > QUESTION_MAX) return false;
   if (ANSWER_LIKE.test(text)) return false;
   // A question has words. A bare code, id or number is a capture artefact.
   if (!/[a-z]{3}/i.test(text)) return false;
