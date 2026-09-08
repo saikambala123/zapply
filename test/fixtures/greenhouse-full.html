@@ -1,0 +1,178 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Job Application for Scout Motors</title>
+<style>
+body{font-family:system-ui;padding:24px;max-width:720px}
+.f{margin-bottom:14px}label{display:block;font-weight:600;font-size:13px;margin-bottom:3px}
+input[type=text]{width:100%;padding:8px;border:0;border-bottom:1px solid #ccd}
+.sel{width:100%;padding:8px;border:1px solid #ccd;border-radius:4px;background:#fff;text-align:left;color:#888;cursor:pointer}
+.sel.filled{color:#111}
+.menu{border:1px solid #ccd;border-radius:4px;max-height:180px;overflow:auto;background:#fff}
+.menu [role=option]{padding:6px 8px;cursor:pointer}
+h3{margin:22px 0 8px}
+</style></head><body>
+<form id="application_form">
+  <div class="f"><label for="fn">First Name *</label><input id="fn" name="first_name" type="text"></div>
+  <div class="f"><label for="ln">Last Name *</label><input id="ln" name="last_name" type="text"></div>
+  <div class="f"><label for="em">Email *</label><input id="em" name="email" type="text"></div>
+
+  <h3>Education</h3>
+  <div id="edu-container">
+    <div class="edu-block" data-edu="1">
+      <div class="f"><label id="s1l">School</label>
+        <div class="sel" id="s1" role="combobox" aria-expanded="false" aria-haspopup="listbox" aria-labelledby="s1l" tabindex="0">Select...</div></div>
+      <div class="f"><label id="d1l">Degree</label>
+        <div class="sel" id="d1" role="combobox" aria-expanded="false" aria-haspopup="listbox" aria-labelledby="d1l" tabindex="0">Select...</div></div>
+      <div class="f"><label id="p1l">Discipline</label>
+        <div class="sel" id="p1" role="combobox" aria-expanded="false" aria-haspopup="listbox" aria-labelledby="p1l" tabindex="0">Select...</div></div>
+    </div>
+  </div>
+  <button type="button" id="add-edu">Add another education</button>
+
+  <h3>Work Experience</h3>
+  <div id="exp-container">
+    <div class="exp-block" data-exp="1">
+      <div class="f"><label for="c1">Company</label><input id="c1" type="text"></div>
+      <div class="f"><label for="t1">Title</label><input id="t1" type="text"></div>
+    </div>
+  </div>
+  <button type="button" id="add-exp">Add another</button>
+
+  <h3>Additional Information</h3>
+  <div class="f"><label id="q1l">This role is based out of the Scout Motors headquarters in Charlotte, North Carolina. Employees must live within 60 miles of the site for commuting. Please select the option that best describes your current situation:</label>
+    <div class="sel" id="q1" role="combobox" aria-expanded="false" aria-haspopup="listbox" aria-labelledby="q1l" tabindex="0">Select...</div></div>
+  <div class="f"><label id="q2l">Which Scout Motors location are you closest to?</label>
+    <div class="sel" id="q2" role="combobox" aria-expanded="false" aria-haspopup="listbox" aria-labelledby="q2l" tabindex="0">Select...</div></div>
+  <div class="f"><label for="city">What is your current location: city?</label><input id="city" type="text"></div>
+  <div class="f"><label id="stl">What is your current state of residence?</label>
+    <div class="sel" id="st" role="combobox" aria-expanded="false" aria-haspopup="listbox" aria-labelledby="stl" tabindex="0">Select...</div></div>
+
+  <fieldset><legend>Are you legally authorized to work in the United States?</legend>
+    <label><input type="radio" name="auth" value="Yes"> Yes</label>
+    <label><input type="radio" name="auth" value="No"> No</label></fieldset>
+  <div class="f"><label><input type="checkbox" id="terms"> I agree to the terms and conditions of this application</label></div>
+
+  <button type="submit">Submit Application</button>
+</form>
+
+<div id="portal"></div>
+
+<script>
+/**
+ * Greenhouse's embed renders School / Degree / Discipline and the long
+ * screening questions as react-select comboboxes. Clicking opens a listbox in a
+ * portal outside the field; typing filters it; picking an option paints the
+ * label back onto the button. The option list is real — which is what the
+ * reported screenshot shows, a School list full of universities, still unset.
+ */
+const OPTIONS = {
+  s1: ["Atlanta College of Art", "Auburn University", "Auburn University - Montgomery",
+       "Auckland University of Technology", "Augsburg College", "Augustana College",
+       "Aurora University", "Austin College", "Austin Peay State University",
+       "University of Texas at Austin"],
+  d1: ["Associate's Degree", "Bachelor's Degree", "Master's Degree", "Doctorate (PhD)"],
+  p1: ["Computer Science", "Information Systems", "Electrical Engineering", "Mathematics"],
+  q1: ["I currently live within 60 miles of the site",
+       "I am willing to relocate within 3-6 months of my start date",
+       "I am not willing to relocate"],
+  q2: ["Charlotte, North Carolina", "Columbia, South Carolina", "Fremont, California",
+       "I do not live near a Scout Motors location"],
+  st: ["Alabama", "California", "Florida", "North Carolina", "Texas"],
+};
+
+let openFor = null;
+function closeMenu() {
+  document.getElementById("portal").innerHTML = "";
+  if (openFor) openFor.setAttribute("aria-expanded", "false");
+  openFor = null;
+}
+function optionsFor(el) { return OPTIONS[el.id] ?? OPTIONS[el.dataset.optionsFrom] ?? []; }
+
+function openMenu(el) {
+  closeMenu();
+  openFor = el;
+  el.setAttribute("aria-expanded", "true");
+  const menu = document.createElement("div");
+  menu.className = "menu";
+  menu.setAttribute("role", "listbox");
+  menu.id = "menu-live";
+  render(menu, el, "");
+  document.getElementById("portal").appendChild(menu);
+
+  // A typing surface, the way react-select puts an input inside the control.
+  const typer = document.createElement("input");
+  typer.type = "text";
+  typer.id = "combo-typer";
+  typer.setAttribute("role", "combobox");
+  typer.setAttribute("aria-controls", "menu-live");
+  el.appendChild(typer);
+  typer.focus();
+  typer.addEventListener("input", () => render(menu, el, typer.value));
+}
+
+const ASYNC_MS = Number(new URLSearchParams(location.search).get("async") || 0);
+function render(menu, el, query) {
+  if (ASYNC_MS && el.id === "s1") {
+    // Greenhouse fetches the school list; until it lands the menu is empty.
+    menu.innerHTML = '<div class="loading">Loading…</div>';
+    clearTimeout(el.__t);
+    el.__t = setTimeout(() => paint(menu, el, query), ASYNC_MS);
+    return;
+  }
+  paint(menu, el, query);
+}
+function paint(menu, el, query) {
+  const q = query.trim().toLowerCase();
+  const list = optionsFor(el).filter((o) => !q || o.toLowerCase().includes(q));
+  menu.innerHTML = list.map((o) => `<div role="option">${o}</div>`).join("");
+  menu.querySelectorAll('[role="option"]').forEach((node) => {
+    node.addEventListener("mousedown", () => choose(el, node.textContent));
+    node.addEventListener("click", () => choose(el, node.textContent));
+  });
+}
+
+function choose(el, text) {
+  el.textContent = text;
+  el.classList.add("filled");
+  el.dataset.value = text;
+  closeMenu();
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+document.addEventListener("mousedown", (e) => {
+  const control = e.target.closest(".sel");
+  if (control && control !== openFor) { openMenu(control); return; }
+  if (!e.target.closest(".menu")) closeMenu();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && openFor) {
+    const first = document.querySelector('#menu-live [role="option"]');
+    if (first) { e.preventDefault(); choose(openFor, first.textContent); }
+  }
+});
+
+/* --- repeat sections --------------------------------------------------- */
+window.__addExpClicks = 0;
+window.__addEduClicks = 0;
+let expN = 1, eduN = 1;
+
+document.getElementById("add-exp").addEventListener("click", () => {
+  window.__addExpClicks++; expN++;
+  const d = document.createElement("div");
+  d.className = "exp-block"; d.setAttribute("data-exp", String(expN));
+  d.innerHTML = `<div class="f"><label for="c${expN}">Company</label><input id="c${expN}" type="text"></div>
+    <div class="f"><label for="t${expN}">Title</label><input id="t${expN}" type="text"></div>`;
+  document.getElementById("exp-container").appendChild(d);
+});
+
+document.getElementById("add-edu").addEventListener("click", () => {
+  window.__addEduClicks++; eduN++;
+  const d = document.createElement("div");
+  d.className = "edu-block"; d.setAttribute("data-edu", String(eduN));
+  d.innerHTML = ["School", "Degree", "Discipline"].map((lab, i) => {
+    const from = ["s1", "d1", "p1"][i];
+    return `<div class="f"><label id="l${eduN}${i}">${lab}</label>` +
+      `<div class="sel" role="combobox" aria-expanded="false" aria-haspopup="listbox" ` +
+      `aria-labelledby="l${eduN}${i}" data-options-from="${from}" tabindex="0">Select...</div></div>`;
+  }).join("");
+  document.getElementById("edu-container").appendChild(d);
+});
+</script></body></html>

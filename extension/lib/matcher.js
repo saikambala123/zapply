@@ -384,8 +384,22 @@
     if (group) push(group);
 
     // 7. Section context — which part of the form this field belongs to.
-    const section = sectionContext(el);
-    if (section.title) push(section.title);
+    //
+    // Only for a field whose own label needs the help. "Company" and "From"
+    // mean nothing without "Work Experience 2" beside them; a screening
+    // question that already spells out what it wants means exactly what it
+    // says, and the section heading it happens to sit under is noise that
+    // rules then match on. That is how "Which Scout Motors location are you
+    // closest to?" — a dropdown in Additional Information, several sections
+    // below the last heading the walk could find — was read as a work-history
+    // Location box and answered with a job's city instead of the applicant's
+    // saved answer.
+    const ownLabel = parts[0] ?? "";
+    const asksItsOwnQuestion = ownLabel.length >= 40 && /[?:]/.test(ownLabel);
+    if (!asksItsOwnQuestion) {
+      const section = sectionContext(el);
+      if (section.title) push(section.title);
+    }
 
     // 8. Machine names, split into words so /first name/ matches "firstName"
     push(humanize(el.getAttribute("name")));

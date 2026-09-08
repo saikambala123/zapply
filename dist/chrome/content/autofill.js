@@ -975,9 +975,57 @@
       try { return document.querySelectorAll(ANSWERABLE_PROBE).length; } catch { return 0; }
     };
 
+    /**
+     * The heading this control sits under.
+     *
+     * The kind used to be decided from the button's text plus the visible text
+     * of its grandparent — and on a Greenhouse embed every one of these buttons
+     * is a direct child of the form, so that grandparent is the page. Its text
+     * contains "Education" and "Work Experience" both, so the test passed for
+     * whichever section was asked about and `find` simply took the first
+     * add-looking button in the document.
+     *
+     * On a form that lists Education above Work Experience, that is the wrong
+     * one twice over: the experience pass clicked "Add another education",
+     * giving the applicant a second empty Education block to delete, and the
+     * Work Experience rows it was supposed to create were never created at all,
+     * so every role after the first went unfilled.
+     */
+    const headingAbove = (el) => {
+      try {
+        const headings = Array.from(document.querySelectorAll("h1,h2,h3,h4,h5,h6,legend"));
+        let nearest = "";
+        for (const heading of headings) {
+          const isAbove = heading.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING;
+          if (isAbove) nearest = M.visibleText(heading) || "";
+        }
+        return nearest;
+      } catch { return ""; }
+    };
+
+    const addsRowsFor = (el, kind, text) => {
+      const re = sectionRe(kind);
+      const otherRe = sectionRe(kind === "experience" ? "education" : "experience");
+      const own = text.trim();
+
+      // The button says which section it belongs to.
+      if (otherRe.test(own)) return false;
+      if (re.test(own)) return true;
+
+      // It just says "Add another", so the section it sits under decides.
+      const heading = headingAbove(el);
+      if (heading) return re.test(heading) && !otherRe.test(heading);
+
+      // No heading to go on. Fall back to nearby text, but only when that text
+      // is about one section and not the other — an ambiguous match here is
+      // what created the empty block.
+      const parentText = M.visibleText(el.parentElement?.parentElement) || "";
+      const context = `${text} ${parentText}`;
+      return re.test(context) && !otherRe.test(context);
+    };
+
     const clickAdds = async (kind, targetCount) => {
       if (targetCount <= 1) return;
-      const re = sectionRe(kind);
       const limit = Math.min(MAX_ADDED_ROWS[kind] ?? 3, targetCount - 1);
       let rowsSeen = countRows(kind);
       let controlsSeen = answerableCount();
@@ -991,8 +1039,7 @@
           .find((el) => {
             const text = M.visibleText(el) || el.getAttribute("aria-label") || el.getAttribute("data-automation-id") || "";
             if (!/^add(?:\s+|$)|add\s+(another|new|work|experience|education|school|job)/i.test(text.trim())) return false;
-            const parentText = M.visibleText(el.parentElement?.parentElement) || "";
-            return re.test(`${text} ${parentText}`);
+            return addsRowsFor(el, kind, text);
           });
 
         if (!add) return;
@@ -2044,10 +2091,28 @@
          lose a race with a re-render. Both get exactly one more attempt. */
       if (!state.stopRequested) {
         await sleep(220);
-        const known = new Set(fields.map((f) => f.el));
-        const fresh = collectFields(adapter).filter((f) => !known.has(f.el));
+
+        /**
+         * A control is new to this pass if nothing has planned it yet — not
+         * merely if it is missing from `fields`.
+         *
+         * `state.allFields` is the same array object as `fields`, and the page
+         * watcher appends to it the moment new controls appear. So the rows
+         * this run had just created by clicking "Add another" were already in
+         * `fields` before the reconcile looked at it: the old test found
+         * nothing new, and the rows were created and then left blank. On a
+         * Greenhouse form with four roles in the profile, three empty Work
+         * Experience blocks were added and only the first was ever filled.
+         */
+        const byElement = new Map(fields.map((f) => [f.el, f]));
+        for (const field of collectFields(adapter)) {
+          if (byElement.has(field.el)) continue;
+          byElement.set(field.el, field);
+          fields.push(field);
+        }
+        const fresh = fields.filter((f) => !plans.has(f) && document.contains(f.el));
+
         if (fresh.length) {
-          fields.push(...fresh);
           state.allFields = fields;
           result.detected = fields.length;
 
