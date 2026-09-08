@@ -305,6 +305,17 @@
   }
 
   /**
+   * How much of a label is kept.
+   *
+   * A single description may run to `LABEL_PART_MAX`, and the joined string to
+   * `LABEL_JOIN_MAX`. Both were lower, and a long question was the casualty:
+   * cut at 400 characters the question arrived at the popup missing its last
+   * clause, and cut at 300 it never arrived at all.
+   */
+  const LABEL_PART_MAX = 700;
+  const LABEL_JOIN_MAX = 900;
+
+  /**
    * Collects every plausible description of a field, best source first.
    * Returned as a single string so one regex test covers all of them.
    */
@@ -369,7 +380,11 @@
       );
       if (heading && !heading.contains(el)) {
         const t = visibleText(heading);
-        if (t && t.length < 300) { push(t); break; }
+        // 300 used to be the ceiling here and in the question extractor both.
+        // Greenhouse's compliance questions run past it — the StackAdapt
+        // secondary-employment question is 381 characters — and a question
+        // dropped here never reaches the popup at all.
+        if (t && t.length < LABEL_PART_MAX) { push(t); break; }
       }
       if (node.tagName === "FIELDSET") {
         const legend = node.querySelector("legend");
@@ -384,28 +399,14 @@
     if (group) push(group);
 
     // 7. Section context — which part of the form this field belongs to.
-    //
-    // Only for a field whose own label needs the help. "Company" and "From"
-    // mean nothing without "Work Experience 2" beside them; a screening
-    // question that already spells out what it wants means exactly what it
-    // says, and the section heading it happens to sit under is noise that
-    // rules then match on. That is how "Which Scout Motors location are you
-    // closest to?" — a dropdown in Additional Information, several sections
-    // below the last heading the walk could find — was read as a work-history
-    // Location box and answered with a job's city instead of the applicant's
-    // saved answer.
-    const ownLabel = parts[0] ?? "";
-    const asksItsOwnQuestion = ownLabel.length >= 40 && /[?:]/.test(ownLabel);
-    if (!asksItsOwnQuestion) {
-      const section = sectionContext(el);
-      if (section.title) push(section.title);
-    }
+    const section = sectionContext(el);
+    if (section.title) push(section.title);
 
     // 8. Machine names, split into words so /first name/ matches "firstName"
     push(humanize(el.getAttribute("name")));
     push(humanize(el.id));
 
-    return parts.join(" | ").slice(0, 400);
+    return parts.join(" | ").slice(0, LABEL_JOIN_MAX);
   }
 
   /**
@@ -2141,6 +2142,121 @@
     return { options, popup: MENU.popup, baseline };
   }
 
+  /**
+   * A list that is still fetching, rather than one that has nothing to offer.
+   *
+   * Telling those two apart is the whole of the Greenhouse School bug: both
+   * look like "no option matched" at the moment the old code looked.
+   */
+  const LOADING_OPTION_RE = /^(?:loading|searching|fetching|please wait)\b|^[.\u2026]+$/i;
+  const LOADING_NOTICE_RE = /\b(?:loading|searching|fetching|please wait)\b/i;
+  const NO_RESULTS_RE = /\b(?:no (?:results|options|matches)|nothing found|no matching)\b/i;
+
+  function looksLoading(nodes, el) {
+    if (nodes.some((n) => LOADING_OPTION_RE.test((n.textContent || "").trim()))) return true;
+    /**
+     * Which subtree to read the notice from.
+     *
+     * `MENU.popup` is only learned once a menu has produced an option, and a
+     * list slow enough to matter has produced none yet — so relying on it
+     * alone meant the one case this check exists for was the one case it
+     * could not see. The widget around the control is the fallback.
+     */
+    let root = null;
+    try {
+      root = MENU.popup && document.contains(MENU.popup) ? MENU.popup : widgetContainer(el || MENU.el);
+    } catch {}
+    if (!root) return false;
+
+    try {
+      if (root.querySelector('[aria-busy="true"], [class*="loading" i], [class*="spinner" i]')) return true;
+      /**
+       * The notice a list shows while it fetches is not an option row, so
+       * scanning option nodes alone never saw it. That is what let a slow
+       * school lookup be read as "settled with nothing to offer": the menu
+       * held the word "Loading..." and the code was only looking at options.
+       */
+      if (!nodes.length) {
+        const notice = (root.textContent || "").trim().replace(/\s+/g, " ");
+        if (NO_RESULTS_RE.test(notice)) return false;   // a real, final "nothing found"
+        if (LOADING_NOTICE_RE.test(notice)) return true;
+      }
+    } catch {}
+    return false;
+  }
+
+  /** A cheap fingerprint of what a menu is currently showing. */
+  function optionSignature(nodes) {
+    return nodes.map((n) => (n.textContent || "").trim()).join("\u0001");
+  }
+
+  /**
+   * The options a list shows once it has finished answering.
+   *
+   * Greenhouse serves its 2,464 schools from boards-api 100 at a time. Opening
+   * the menu shows page one — every entry an "A" — and reaching anything else
+   * means typing and waiting for the fetch to come back. The old code typed,
+   * waited a flat ~300ms, saw only the "Loading..." notice, concluded nothing
+   * matched and wiped the box again. The keystroke log said it plainly:
+   *
+   *   typed:   ["", "Osmania University", "", "", "Osmania University", ""]
+   *   queried: [""]
+   *
+   * The list was never asked for anything but the empty string, so School was
+   * left on "Select..." on every Greenhouse application, and the control was
+   * then flagged as unanswerable so the reconcile pass would not retry it.
+   *
+   * This waits for the list to settle instead of racing it: no loading notice,
+   * and the same rows twice running. A local filter settles on the first poll
+   * and costs nothing; only a list genuinely still fetching spends the budget.
+   * `changed` is reported back so the caller can tell "searched, found nothing"
+   * from "never got an answer" — the second must not be held against the field.
+   */
+  async function settledOptions(session, previousSignature, timeoutMs = 1400) {
+    const soft = Date.now() + Math.max(300, timeoutMs);
+    /**
+     * Waiting longer costs nothing unless the list is actually still fetching.
+     *
+     * A local filter settles on the first poll and returns in ~160ms, so the
+     * budget is never spent on it. Only a list that is still showing a loading
+     * notice may run past the soft deadline, and only up to this cap — which is
+     * what keeps a slow school lookup from being written off as "no match" on
+     * a bad connection without letting a broken widget stall the whole fill.
+     */
+    const hard = Date.now() + Math.max(3000, timeoutMs);
+    let nodes = menuOptions(session);
+    let lastSignature = null;
+    let steadySince = null;
+
+    while (Date.now() < hard) {
+      const signature = optionSignature(nodes);
+      const loading = looksLoading(nodes, session?.el);
+      if (Date.now() >= soft && !loading) break;
+
+      const steady = !loading && nodes.length > 0 && signature === lastSignature;
+
+      if (steady && signature !== previousSignature) {
+        return { options: nodes, settled: true, changed: true };
+      }
+      if (steady) {
+        // Settled on the same rows it already had. That is a real answer from
+        // a local filter, but indistinguishable from a remote list that has
+        // not started yet, so it gets one grace period before being believed.
+        steadySince = steadySince ?? Date.now();
+        if (Date.now() - steadySince >= 260) {
+          return { options: nodes, settled: true, changed: false };
+        }
+      } else {
+        steadySince = null;
+      }
+
+      lastSignature = signature;
+      await wait(80);
+      nodes = menuOptions(session);
+    }
+    return { options: nodes, settled: !looksLoading(nodes, session?.el), changed: optionSignature(nodes) !== previousSignature };
+  }
+
   /** Re-reads this menu's options after typing changed the filtered list. */
   function menuOptions(session) {
     if (!session) return [];
@@ -2465,32 +2581,44 @@
 
     let { best, bestScore } = pick(options);
 
-    // Long lists (country, state, school) are virtualised — only the first
-    // rows exist in the DOM. Typing is the only way to reach the rest.
+    // Whether the list was ever actually able to answer. A remote list that
+    // never came back must not be recorded as one that had no match.
+    let searchInconclusive = false;
+
+    // Long lists (country, state, school) are virtualised or paged — only the
+    // first rows exist in the DOM. Typing is the only way to reach the rest.
     if (!best || bestScore < 100) {
       const search = findSearchInput(el, MENU.popup, MENU.baselineInputs);
       if (search) {
+        const beforeTyping = optionSignature(options);
         setComboboxText(search, "");
         await wait(40);
         setComboboxText(search, String(value));
-        await wait(Math.min(500, Math.max(220, waitMs / 3)));
-        const filtered = menuOptions(session);
-        if (filtered.length) {
-          const retry = pick(filtered);
+
+        // Not a fixed wait. Greenhouse debounces, then fetches; anything
+        // shorter than the round trip clears the box before the list has
+        // said a word, and the query is lost.
+        const filtered = await settledOptions(session, beforeTyping, Math.max(1400, waitMs));
+        searchInconclusive = !filtered.settled;
+
+        if (filtered.options.length) {
+          const retry = pick(filtered.options);
           if (retry.best && retry.bestScore >= bestScore) {
             best = retry.best;
             bestScore = retry.bestScore;
-            options = filtered;
+            options = filtered.options;
           }
         }
         // A filter that matched nothing must be cleared, or the control is
-        // left holding junk text after we close it.
+        // left holding junk text after we close it. Only once the list has
+        // settled, though — clearing a list still in flight is what threw the
+        // school name away before anything could match it.
         if (!best || bestScore < 55) {
           setComboboxText(search, "");
-          await wait(180);
-          options = menuOptions(session);
-          const cleared = pick(options);
-          best = cleared.best; bestScore = cleared.bestScore;
+          const cleared = await settledOptions(session, optionSignature(options), 600);
+          options = cleared.options;
+          const rescored = pick(options);
+          best = rescored.best; bestScore = rescored.bestScore;
         }
       }
     }
@@ -2508,8 +2636,12 @@
       // Unless it barely offered anything — a dependent dropdown that is still
       // waiting on its parent looks identical to a dead end at this point, and
       // that one does deserve a second try once the parent is answered.
+      //
+      // A search that never settled is not evidence of anything. Flagging on
+      // it is how the School picker became permanently unanswerable: the fetch
+      // was merely slow, and the control was written off for it.
       const realOptions = options.filter((o) => !isPlaceholderChoice(o.textContent || ""));
-      el.__zapplyNoMatch = realOptions.length >= 3;
+      el.__zapplyNoMatch = realOptions.length >= 3 && !searchInconclusive;
       await closeOpenMenu();
       return false;
     }

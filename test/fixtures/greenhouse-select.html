@@ -1,0 +1,283 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Job Application for StackAdapt</title>
+<style>
+body{font-family:system-ui;padding:24px;max-width:720px}
+.input-wrapper{margin-bottom:20px}
+label.label{display:block;font-weight:600;font-size:13px;margin-bottom:6px}
+input.text{width:100%;padding:8px;border:1px solid #ccd;border-radius:4px}
+.select__container{position:relative}
+.select__control{display:flex;align-items:center;border:1px solid #ccd;border-radius:4px;padding:6px 8px;background:#fff;min-height:34px}
+.select__value-container{flex:1;display:flex;align-items:center;position:relative}
+.select__single-value{color:#111}
+.select__placeholder{color:#999}
+.select__input-container{display:inline-grid;flex:1}
+input.select__input{border:0;outline:0;padding:0;width:100%;background:transparent;font:inherit}
+.select__menu{position:absolute;left:0;right:0;top:100%;background:#fff;border:1px solid #ccd;border-radius:4px;z-index:20;margin-top:2px}
+.select__menu[hidden]{display:none}
+.select__option{padding:8px;cursor:pointer}
+.select__option:hover{background:#eef}
+/* react-select's A11yText: a 1x1 clipped live region for screen readers. */
+.css-7pg0cj-a11yText{z-index:9999;border:0;clip:rect(1px,1px,1px,1px);height:1px;width:1px;position:absolute;overflow:hidden;padding:0;white-space:nowrap}
+</style></head><body>
+<h1>Apply for this job</h1>
+<form id="application_form">
+
+  <div class="input-wrapper">
+    <label class="label" for="first_name">First Name<span aria-hidden="true">*</span></label>
+    <input class="text" id="first_name" name="first_name" type="text">
+  </div>
+  <div class="input-wrapper">
+    <label class="label" for="last_name">Last Name<span aria-hidden="true">*</span></label>
+    <input class="text" id="last_name" name="last_name" type="text">
+  </div>
+  <div class="input-wrapper">
+    <label class="label" for="email">Email<span aria-hidden="true">*</span></label>
+    <input class="text" id="email" name="email" type="text">
+  </div>
+
+  <!-- ============ the long compliance question from the report ============ -->
+  <div class="input-wrapper" data-rs="secondary">
+    <label class="label" for="question_38516920007">If hired by StackAdapt, do you intend to hold any secondary employment, advisory position (e.g. membership on a board of directors), or volunteer position that (1) is on behalf of a business that would be competitive in nature to the business of StackAdapt, (2) conflict with your ability to perform your duties at StackAdapt, or (3) conflict with your working hours at StackAdapt?<span aria-hidden="true">*</span></label>
+    <div class="select__container" data-options="Yes|No">
+      <span class="css-7pg0cj-a11yText" id="react-select-7-live-region"></span>
+      <span aria-live="polite" aria-atomic="false" aria-relevant="additions text" role="log" class="css-7pg0cj-a11yText">
+        <span id="aria-selection"></span><span id="aria-focused"></span>
+        <span id="aria-results"></span><span id="aria-guidance"></span>
+      </span>
+      <div class="select__control">
+        <div class="select__value-container">
+          <div class="select__placeholder">Select...</div>
+          <div class="select__input-container">
+            <input class="select__input" id="question_38516920007" role="combobox"
+                   aria-expanded="false" aria-haspopup="true" aria-autocomplete="list" autocomplete="off">
+          </div>
+        </div>
+      </div>
+      <div class="select__menu" hidden role="listbox"></div>
+    </div>
+  </div>
+
+  <!-- ============ a short dropdown question, for contrast ============ -->
+  <div class="input-wrapper" data-rs="worked-before">
+    <label class="label" for="question_38516920008">Have you previously worked at StackAdapt?<span aria-hidden="true">*</span></label>
+    <div class="select__container" data-options="Yes|No">
+      <span aria-live="polite" aria-atomic="false" aria-relevant="additions text" role="log" class="css-7pg0cj-a11yText">
+        <span id="aria-selection-2"></span>
+      </span>
+      <div class="select__control">
+        <div class="select__value-container">
+          <div class="select__placeholder">Select...</div>
+          <div class="select__input-container">
+            <input class="select__input" id="question_38516920008" role="combobox"
+                   aria-expanded="false" aria-haspopup="true" aria-autocomplete="list" autocomplete="off">
+          </div>
+        </div>
+      </div>
+      <div class="select__menu" hidden role="listbox"></div>
+    </div>
+  </div>
+
+  <!-- ============ education: async school typeahead ============ -->
+  <h3>Education</h3>
+  <div class="input-wrapper" data-rs="school">
+    <label class="label" for="school--0">School<span aria-hidden="true">*</span></label>
+    <div class="select__container" data-async="school">
+      <span aria-live="polite" aria-atomic="false" aria-relevant="additions text" role="log" class="css-7pg0cj-a11yText">
+        <span id="aria-selection-3"></span>
+      </span>
+      <div class="select__control">
+        <div class="select__value-container">
+          <div class="select__placeholder">Select...</div>
+          <div class="select__input-container">
+            <input class="select__input" id="school--0" role="combobox"
+                   aria-expanded="false" aria-haspopup="true" aria-autocomplete="list" autocomplete="off">
+          </div>
+        </div>
+      </div>
+      <div class="select__menu" hidden role="listbox"></div>
+    </div>
+  </div>
+
+  <div class="input-wrapper" data-rs="degree">
+    <label class="label" for="degree--0">Degree</label>
+    <div class="select__container" data-options="High School|Bachelor's Degree|Master's Degree|Doctorate">
+      <span aria-live="polite" aria-atomic="false" aria-relevant="additions text" role="log" class="css-7pg0cj-a11yText">
+        <span id="aria-selection-4"></span>
+      </span>
+      <div class="select__control">
+        <div class="select__value-container">
+          <div class="select__placeholder">Select...</div>
+          <div class="select__input-container">
+            <input class="select__input" id="degree--0" role="combobox"
+                   aria-expanded="false" aria-haspopup="true" aria-autocomplete="list" autocomplete="off">
+          </div>
+        </div>
+      </div>
+      <div class="select__menu" hidden role="listbox"></div>
+    </div>
+  </div>
+
+  <!-- ====== a long question on a radio group, with a live region ====== -->
+  <div class="input-wrapper" data-rs="relocate">
+    <fieldset style="border:0;padding:0;margin:0">
+      <legend style="font-weight:600;font-size:13px">Are you willing to relocate to Toronto, Ontario for this role, understanding that StackAdapt operates on a hybrid schedule requiring three days per week in the office, and that relocation assistance is offered only to candidates who are already legally authorised to work in Canada without sponsorship?</legend>
+      <span aria-live="polite" role="log" class="css-7pg0cj-a11yText" id="relocate-live"></span>
+      <label><input type="radio" name="relocate" value="Yes"> Yes</label>
+      <label><input type="radio" name="relocate" value="No"> No</label>
+    </fieldset>
+  </div>
+
+  <!-- ====== a long question on a checkbox group ====== -->
+  <div class="input-wrapper" data-rs="ack">
+    <fieldset style="border:0;padding:0;margin:0">
+      <legend style="font-weight:600;font-size:13px">Please confirm which of the following you acknowledge: that the information you have provided in this application is accurate and complete to the best of your knowledge, that you consent to StackAdapt verifying it with previous employers and educational institutions, and that any misrepresentation may result in withdrawal of an offer.</legend>
+      <span aria-live="polite" role="log" class="css-7pg0cj-a11yText" id="ack-live"></span>
+      <label><input type="checkbox" name="ack" value="Accurate"> Information is accurate</label>
+      <label><input type="checkbox" name="ack" value="Consent"> I consent to verification</label>
+    </fieldset>
+  </div>
+
+  <button type="submit">Submit Application</button>
+</form>
+
+<script>
+/* A faithful-enough react-select v5: the control is a text input, the chosen
+   value is painted into .select__single-value, and every change writes the
+   library's own screen-reader announcement into the aria-live region. */
+
+/* Greenhouse serves 2,464 schools from boards-api, 100 to a page. Opening the
+   menu shows page one — every one of them an "A" — and reaching anything else
+   means typing and waiting for the fetch to come back. */
+const SCHOOLS = [];
+const A_NAMES = ["Abraham Baldwin Agricultural College", "Academy of Art University",
+  "Acadia University", "Adams State University", "Adelphi University", "Adrian College",
+  "Adventist University of Health Sciences", "Agnes Scott College", "AIB College of Business",
+  "Alaska Pacific University"];
+for (let i = 0; i < 10; i++) A_NAMES.forEach((n) => SCHOOLS.push(i ? n + " " + i : n));
+["Jawaharlal Nehru Technological University", "Osmania University",
+ "Indian Institute of Technology Bombay", "Stanford University",
+ "University of Texas at Dallas"].forEach((n) => SCHOOLS.push(n));
+window.__schoolQueries = [];
+window.__typed = [];
+
+function announce(container, text) {
+  const region = container.querySelector('[aria-live]');
+  if (!region) return;
+  const slot = region.querySelector('span') || region;
+  slot.textContent = text;
+}
+
+function paint(container, label) {
+  const vc = container.querySelector('.select__value-container');
+  vc.querySelector('.select__placeholder')?.remove();
+  let sv = vc.querySelector('.select__single-value');
+  if (!sv) {
+    sv = document.createElement('div');
+    sv.className = 'select__single-value';
+    vc.insertBefore(sv, vc.firstChild);
+  }
+  sv.textContent = label;
+}
+
+function optionsFor(container, query) {
+  if (container.dataset.async === 'school') {
+    const q = (query || '').trim().toLowerCase();
+    window.__schoolQueries.push(q);
+    if (!q) return SCHOOLS.slice(0, 100);               // page one: all "A" names
+    return SCHOOLS.filter((s) => s.toLowerCase().includes(q)).slice(0, 100);
+  }
+  const all = (container.dataset.options || '').split('|').filter(Boolean);
+  const q = (query || '').trim().toLowerCase();
+  return q ? all.filter((s) => s.toLowerCase().includes(q)) : all;
+}
+
+function renderMenu(container, query) {
+  const menu = container.querySelector('.select__menu');
+  const list = optionsFor(container, query);
+  menu.innerHTML = '';
+  if (!list.length) {
+    const empty = document.createElement('div');
+    empty.className = 'select__menu-notice';
+    empty.textContent = container.dataset.async ? 'Type to search' : 'No options';
+    menu.appendChild(empty);
+    announce(container, '0 results available.');
+    return;
+  }
+  list.forEach((label, i) => {
+    const opt = document.createElement('div');
+    opt.className = 'select__option';
+    opt.setAttribute('role', 'option');
+    opt.id = 'opt-' + Math.random().toString(36).slice(2, 8);
+    opt.textContent = label;
+    opt.addEventListener('mousedown', (e) => e.preventDefault());
+    opt.addEventListener('click', () => choose(container, label));
+    menu.appendChild(opt);
+  });
+  announce(container, list.length + ' results available.');
+}
+
+function choose(container, label) {
+  const input = container.querySelector('.select__input');
+  paint(container, label);
+  input.value = '';
+  close(container);
+  /* react-select's onChange announcement — the exact string in the report. */
+  announce(container, 'option ' + label + ', selected.');
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+function open(container, query) {
+  const menu = container.querySelector('.select__menu');
+  const input = container.querySelector('.select__input');
+  menu.hidden = false;
+  input.setAttribute('aria-expanded', 'true');
+  /* A remote list debounces, shows "Loading...", then answers. */
+  if (container.dataset.async === 'school') {
+    clearTimeout(container.__t);
+    menu.innerHTML = '<div class="select__menu-notice">Loading...</div>';
+    container.__t = setTimeout(() => {
+      if (!menu.hidden) renderMenu(container, query);
+    }, Number(new URLSearchParams(location.search).get('lag') || 450));
+  } else {
+    renderMenu(container, query);
+  }
+}
+
+function close(container) {
+  const menu = container.querySelector('.select__menu');
+  const input = container.querySelector('.select__input');
+  menu.hidden = true;
+  input.setAttribute('aria-expanded', 'false');
+}
+
+document.querySelectorAll('.select__container').forEach((container) => {
+  const input = container.querySelector('.select__input');
+  const control = container.querySelector('.select__control');
+  control.addEventListener('mousedown', () => {
+    if (container.querySelector('.select__menu').hidden) open(container, input.value);
+    else close(container);
+  });
+  input.addEventListener('focus', () => open(container, input.value));
+  input.addEventListener('input', () => {
+    if (container.dataset.async === 'school') window.__typed.push(input.value);
+    open(container, input.value);
+  });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(container); });
+});
+document.addEventListener('mousedown', (e) => {
+  document.querySelectorAll('.select__container').forEach((c) => {
+    if (!c.contains(e.target)) close(c);
+  });
+});
+
+/* What the page believes each dropdown holds. */
+window.__shown = () => {
+  const out = {};
+  document.querySelectorAll('.select__container').forEach((c) => {
+    out[c.closest('[data-rs]').dataset.rs] =
+      c.querySelector('.select__single-value')?.textContent || '';
+  });
+  return out;
+};
+</script>
+</body></html>

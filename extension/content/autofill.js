@@ -975,57 +975,9 @@
       try { return document.querySelectorAll(ANSWERABLE_PROBE).length; } catch { return 0; }
     };
 
-    /**
-     * The heading this control sits under.
-     *
-     * The kind used to be decided from the button's text plus the visible text
-     * of its grandparent — and on a Greenhouse embed every one of these buttons
-     * is a direct child of the form, so that grandparent is the page. Its text
-     * contains "Education" and "Work Experience" both, so the test passed for
-     * whichever section was asked about and `find` simply took the first
-     * add-looking button in the document.
-     *
-     * On a form that lists Education above Work Experience, that is the wrong
-     * one twice over: the experience pass clicked "Add another education",
-     * giving the applicant a second empty Education block to delete, and the
-     * Work Experience rows it was supposed to create were never created at all,
-     * so every role after the first went unfilled.
-     */
-    const headingAbove = (el) => {
-      try {
-        const headings = Array.from(document.querySelectorAll("h1,h2,h3,h4,h5,h6,legend"));
-        let nearest = "";
-        for (const heading of headings) {
-          const isAbove = heading.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING;
-          if (isAbove) nearest = M.visibleText(heading) || "";
-        }
-        return nearest;
-      } catch { return ""; }
-    };
-
-    const addsRowsFor = (el, kind, text) => {
-      const re = sectionRe(kind);
-      const otherRe = sectionRe(kind === "experience" ? "education" : "experience");
-      const own = text.trim();
-
-      // The button says which section it belongs to.
-      if (otherRe.test(own)) return false;
-      if (re.test(own)) return true;
-
-      // It just says "Add another", so the section it sits under decides.
-      const heading = headingAbove(el);
-      if (heading) return re.test(heading) && !otherRe.test(heading);
-
-      // No heading to go on. Fall back to nearby text, but only when that text
-      // is about one section and not the other — an ambiguous match here is
-      // what created the empty block.
-      const parentText = M.visibleText(el.parentElement?.parentElement) || "";
-      const context = `${text} ${parentText}`;
-      return re.test(context) && !otherRe.test(context);
-    };
-
     const clickAdds = async (kind, targetCount) => {
       if (targetCount <= 1) return;
+      const re = sectionRe(kind);
       const limit = Math.min(MAX_ADDED_ROWS[kind] ?? 3, targetCount - 1);
       let rowsSeen = countRows(kind);
       let controlsSeen = answerableCount();
@@ -1039,7 +991,8 @@
           .find((el) => {
             const text = M.visibleText(el) || el.getAttribute("aria-label") || el.getAttribute("data-automation-id") || "";
             if (!/^add(?:\s+|$)|add\s+(another|new|work|experience|education|school|job)/i.test(text.trim())) return false;
-            return addsRowsFor(el, kind, text);
+            const parentText = M.visibleText(el.parentElement?.parentElement) || "";
+            return re.test(`${text} ${parentText}`);
           });
 
         if (!add) return;
@@ -1729,7 +1682,10 @@
         // a brief summary" — was skipped by the one pass meant to catch it.
         // Any labelled question is now attempted; the model is instructed to
         // answer only from the profile, and returns nothing when it can't.
-        if (q.length < 4 || q.length > 300) return false;
+        // The same 300-character ceiling that lost the dropdown question was
+        // skipping long essay prompts here — and a long prompt is exactly the
+        // kind this pass exists to answer.
+        if (q.length < 4 || q.length > QUESTION_MAX) return false;
         return true;
       })
       .slice(0, 60);
@@ -1858,64 +1814,6 @@
       return true;
     });
     return { ...profile, experience };
-  }
-
-  /**
-   * One line per control, printed to the page console after a fill.
-   *
-   * Deliberately free of answers. Sharing it should cost nothing: the value is
-   * reduced to where it came from and how long it was, which is enough to see
-   * that a School box was matched, planned from the profile and still left
-   * empty — the difference between a matching problem, a data problem and a
-   * writing problem, which is otherwise invisible from a screenshot.
-   */
-  function logFillReport(fields, plans, result) {
-    const shape = (el) => {
-      const tag = el.tagName.toLowerCase();
-      const role = el.getAttribute?.("role");
-      const inner = el.querySelector?.("input, textarea");
-      return [
-        tag,
-        role ? `role=${role}` : "",
-        el.type ? `type=${el.type}` : "",
-        inner ? `inner=${inner.tagName.toLowerCase()}` : "",
-        el.getAttribute?.("aria-haspopup") ? "haspopup" : "",
-      ].filter(Boolean).join(" ");
-    };
-
-    const rows = (fields ?? []).map((field) => {
-      const plan = plans?.get(field) ?? null;
-      let current = "";
-      try { current = String(readValue(field) ?? ""); } catch {}
-      return {
-        label: String(field.label ?? "").split(" | ")[0].slice(0, 70),
-        kind: field.kind,
-        dom: shape(field.el),
-        rule: field.rule?.key ?? "—",
-        row: Number.isInteger(field.index) ? field.index : "—",
-        status: plan?.status ?? "—",
-        source: plan?.source ?? "—",
-        planned: plan?.value == null ? "—" : `${String(plan.value).length} chars`,
-        got: current ? `${current.length} chars` : "EMPTY",
-      };
-    });
-
-    const profile = state.profile ?? {};
-    console.log(
-      `%c[Zapply] fill report — ${result.filled} filled, ${result.unmatched ?? 0} unanswered, ${result.failed ?? 0} failed, ${result.durationMs}ms`,
-      "font-weight:bold"
-    );
-    console.log("[Zapply] data on hand:", {
-      profile: profile.label ?? null,
-      experience: (profile.experience ?? []).length,
-      education: (profile.education ?? []).length,
-      schools: (profile.education ?? []).map((e) => (e?.school ? "set" : "EMPTY")),
-      savedAnswers: (state.session?.responses ?? []).length,
-      aiAnswers: state.session?.settings?.aiAnswers === true,
-      premium: state.session?.premium === true,
-    });
-    try { console.table(rows); } catch { console.log(rows); }
-    console.log("[Zapply] copy the two lines above, and the table, when reporting a form that filled badly.");
   }
 
   /* ================================================================== */
@@ -2149,28 +2047,10 @@
          lose a race with a re-render. Both get exactly one more attempt. */
       if (!state.stopRequested) {
         await sleep(220);
-
-        /**
-         * A control is new to this pass if nothing has planned it yet — not
-         * merely if it is missing from `fields`.
-         *
-         * `state.allFields` is the same array object as `fields`, and the page
-         * watcher appends to it the moment new controls appear. So the rows
-         * this run had just created by clicking "Add another" were already in
-         * `fields` before the reconcile looked at it: the old test found
-         * nothing new, and the rows were created and then left blank. On a
-         * Greenhouse form with four roles in the profile, three empty Work
-         * Experience blocks were added and only the first was ever filled.
-         */
-        const byElement = new Map(fields.map((f) => [f.el, f]));
-        for (const field of collectFields(adapter)) {
-          if (byElement.has(field.el)) continue;
-          byElement.set(field.el, field);
-          fields.push(field);
-        }
-        const fresh = fields.filter((f) => !plans.has(f) && document.contains(f.el));
-
+        const known = new Set(fields.map((f) => f.el));
+        const fresh = collectFields(adapter).filter((f) => !known.has(f.el));
         if (fresh.length) {
+          fields.push(...fresh);
           state.allFields = fields;
           result.detected = fields.length;
 
@@ -2299,19 +2179,6 @@
     result.profileLabel = state.profile?.label ?? null;
     result.matchScore = state.scoring?.score ?? null;
     state.lastRun = result;
-
-    /**
-     * What this fill saw, and what it decided about each control.
-     *
-     * A form that fills perfectly in a test fixture and badly on the real site
-     * is not something guesswork closes. This prints one line per field —
-     * label, the rule it matched, the row it was assigned, where its answer
-     * came from and what ended up in the box — to the page console, so a report
-     * from an application that went wrong says exactly which step went wrong
-     * rather than only that it did. It carries no answers, only their source
-     * and length, so a report can be shared without sharing a profile.
-     */
-    try { logFillReport(fields, plans, result); } catch {}
 
     watchUnmatched();
     queueAnswersFromForm();
@@ -2497,6 +2364,93 @@
     ")\\s*[.?!*]?$",
     "i"
   );
+
+  /**
+   * Text a widget speaks to a screen reader, rather than text a person wrote.
+   *
+   * react-select — which is what Greenhouse, Lever and Ashby render their
+   * dropdowns with — keeps a 1x1 clipped `role="log"` region beside every
+   * control and narrates itself into it: "option No, selected." after a pick,
+   * "5 results available." while filtering. That region is a *sibling* of the
+   * input, wraps no control of its own, and reads like ordinary prose, so it
+   * passed every test a question candidate had to pass. On a Greenhouse form
+   * whose real question was too long to survive the length ceiling, this is
+   * what took its place — every dropdown on the page banked under the question
+   * "option No, selected.".
+   */
+  const ANNOUNCEMENT_RE = new RegExp(
+    "^(?:" +
+      // react-select's own onChange / onFocus / onFilter commentary.
+      "options? .*?,\\s*(?:de)?selected\\b.*|" +
+      "option .*? is disabled\\b.*|" +
+      "option .*?focused,\\s*\\d+\\s*of\\s*\\d+.*|" +
+      "all selected options have been cleared.*|" +
+      "\\d+\\s*results?\\s*(?:are\\s*)?available.*|" +
+      "no results found.*|" +
+      "select is focused.*|" +
+      "menu is (?:open|closed).*|" +
+      "loading\\W*|" +
+      "use (?:up and down |left and right )?arrow keys.*|" +
+      "press (?:down|up|left|right|enter|escape|esc|tab|backspace)\\b.*" +
+    ")$",
+    "i"
+  );
+
+  /**
+   * Is this node a live region, or text hidden for a screen reader's benefit?
+   *
+   * The wording test above catches the announcements a library ships in
+   * English. This catches the container regardless of what it happens to say,
+   * which is what makes the fix hold on a localised form or a library that
+   * words its commentary differently.
+   */
+  function isAnnouncementNode(node) {
+    if (!node?.closest) return false;
+    try {
+      if (node.closest('[aria-live], [role="log"], [role="status"], [role="alert"], [aria-hidden="true"]')) {
+        return true;
+      }
+    } catch {}
+    /**
+     * The visually-hidden idiom: still laid out, but clipped to a single
+     * pixel. Deliberately not a test for zero size — a collapsed section is
+     * 0x0 and its headings are perfectly good questions once it opens.
+     */
+    try {
+      const r = node.getBoundingClientRect?.();
+      if (r && r.width > 0 && r.width <= 1 && r.height > 0 && r.height <= 1) return true;
+      const style = getComputedStyle(node);
+      const clip = `${style?.clip || ""} ${style?.clipPath || ""}`;
+      if (/rect\(\s*(?:0|1)px/i.test(clip) || /inset\(\s*50%/i.test(clip)) return true;
+    } catch {}
+    return false;
+  }
+
+  /**
+   * How long a question may be before it is shortened rather than thrown away.
+   *
+   * There was a flat ceiling of 300 characters and anything over it was
+   * *discarded*, not shortened. Greenhouse's compliance questions run well
+   * past that — the StackAdapt secondary-employment question is 381 characters
+   * — so the question a person could plainly read above the dropdown was
+   * dropped for length, and the search fell through to the screen-reader
+   * announcement sitting beside it.
+   *
+   * A long question is still a question. It is now cut at a word boundary and
+   * kept, so length alone can never send the search down the fallback chain.
+   * The cut is deterministic, so the same question on the next application
+   * shortens to the same key and a saved answer still matches.
+   */
+  const QUESTION_MAX = 600;
+
+  function trimQuestion(value) {
+    const text = String(value ?? "").trim().replace(/\s+/g, " ");
+    if (text.length <= QUESTION_MAX) return text;
+    const cut = text.slice(0, QUESTION_MAX);
+    const boundary = cut.lastIndexOf(" ");
+    const kept = boundary > QUESTION_MAX * 0.6 ? cut.slice(0, boundary) : cut;
+    return `${kept.replace(/[\s,;:.\u2013\u2014-]+$/, "")}\u2026`;
+  }
 
   /**
    * Every label the controls in this field's group carry.
@@ -2707,10 +2661,14 @@
         try { if (document.getElementById(forId) && !memberIds.has(forId)) return ""; } catch {}
       }
       if (inAnotherField(cand, stopAt)) return "";
-      const text = (cand.textContent || "").trim().replace(/\s+/g, " ");
-      if (text.length < 8 || text.length > 300) return "";
+      // A live region is the widget talking to a screen reader, not the form
+      // asking the applicant something.
+      if (isAnnouncementNode(cand)) return "";
+      const text = trimQuestion(cand.textContent || "");
+      if (text.length < 8) return "";
       if (skip.has(answerKey(text))) return "";
       if (ANSWER_LIKE_RE.test(text)) return "";
+      if (ANNOUNCEMENT_RE.test(text)) return "";
       if (looksMachineGenerated(text)) return "";
       return text;
     };
@@ -2751,7 +2709,11 @@
       String(list || "").split(/\s+/).forEach((id) => {
         if (!id) return;
         const node = document.getElementById(id);
-        if (node && !node.contains(el)) push(M.visibleText?.(node) ?? node.textContent);
+        // react-select points `aria-describedby` at its own live region, so a
+        // pointed-at node still has to prove it is a label and not commentary.
+        if (node && !node.contains(el) && !isAnnouncementNode(node)) {
+          push(M.visibleText?.(node) ?? node.textContent);
+        }
       });
     };
 
@@ -2788,10 +2750,11 @@
     const machine = machineNameParts(el);
 
     const acceptable = (value) => {
-      const text = String(value ?? "").trim().replace(/\s+/g, " ");
-      if (text.length < floor || text.length > 300) return "";
+      const text = trimQuestion(value);
+      if (text.length < floor) return "";
       if (options.has(answerKey(text))) return "";
       if (ANSWER_LIKE_RE.test(text)) return "";
+      if (ANNOUNCEMENT_RE.test(text)) return "";
       if (looksMachineGenerated(text)) return "";
       return text;
     };
@@ -3302,8 +3265,17 @@
       if (!anyTicked) return false;
     }
 
+    /**
+     * The last of the three 300-character ceilings.
+     *
+     * Even once the question survived extraction, this threw it away again —
+     * so the Greenhouse dropdown whose question ran to 381 characters produced
+     * no pending answer at all. `trimQuestion` already bounds every question,
+     * so what is left here is a sanity check, not a filter: the allowance is
+     * the trim plus room for a row qualifier like " — Education 2".
+     */
     const question = capturedQuestion(field);
-    if (!question || question.length > 300) return false;
+    if (!question || question.length > QUESTION_MAX + 100) return false;
 
     el.__zapplyLastCaptured = answer;
     if (!worthSaving(field, answer)) return false;
