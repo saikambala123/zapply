@@ -1860,6 +1860,64 @@
     return { ...profile, experience };
   }
 
+  /**
+   * One line per control, printed to the page console after a fill.
+   *
+   * Deliberately free of answers. Sharing it should cost nothing: the value is
+   * reduced to where it came from and how long it was, which is enough to see
+   * that a School box was matched, planned from the profile and still left
+   * empty — the difference between a matching problem, a data problem and a
+   * writing problem, which is otherwise invisible from a screenshot.
+   */
+  function logFillReport(fields, plans, result) {
+    const shape = (el) => {
+      const tag = el.tagName.toLowerCase();
+      const role = el.getAttribute?.("role");
+      const inner = el.querySelector?.("input, textarea");
+      return [
+        tag,
+        role ? `role=${role}` : "",
+        el.type ? `type=${el.type}` : "",
+        inner ? `inner=${inner.tagName.toLowerCase()}` : "",
+        el.getAttribute?.("aria-haspopup") ? "haspopup" : "",
+      ].filter(Boolean).join(" ");
+    };
+
+    const rows = (fields ?? []).map((field) => {
+      const plan = plans?.get(field) ?? null;
+      let current = "";
+      try { current = String(readValue(field) ?? ""); } catch {}
+      return {
+        label: String(field.label ?? "").split(" | ")[0].slice(0, 70),
+        kind: field.kind,
+        dom: shape(field.el),
+        rule: field.rule?.key ?? "—",
+        row: Number.isInteger(field.index) ? field.index : "—",
+        status: plan?.status ?? "—",
+        source: plan?.source ?? "—",
+        planned: plan?.value == null ? "—" : `${String(plan.value).length} chars`,
+        got: current ? `${current.length} chars` : "EMPTY",
+      };
+    });
+
+    const profile = state.profile ?? {};
+    console.log(
+      `%c[Zapply] fill report — ${result.filled} filled, ${result.unmatched ?? 0} unanswered, ${result.failed ?? 0} failed, ${result.durationMs}ms`,
+      "font-weight:bold"
+    );
+    console.log("[Zapply] data on hand:", {
+      profile: profile.label ?? null,
+      experience: (profile.experience ?? []).length,
+      education: (profile.education ?? []).length,
+      schools: (profile.education ?? []).map((e) => (e?.school ? "set" : "EMPTY")),
+      savedAnswers: (state.session?.responses ?? []).length,
+      aiAnswers: state.session?.settings?.aiAnswers === true,
+      premium: state.session?.premium === true,
+    });
+    try { console.table(rows); } catch { console.log(rows); }
+    console.log("[Zapply] copy the two lines above, and the table, when reporting a form that filled badly.");
+  }
+
   /* ================================================================== */
   /*  The run                                                            */
   /* ================================================================== */
@@ -2241,6 +2299,19 @@
     result.profileLabel = state.profile?.label ?? null;
     result.matchScore = state.scoring?.score ?? null;
     state.lastRun = result;
+
+    /**
+     * What this fill saw, and what it decided about each control.
+     *
+     * A form that fills perfectly in a test fixture and badly on the real site
+     * is not something guesswork closes. This prints one line per field —
+     * label, the rule it matched, the row it was assigned, where its answer
+     * came from and what ended up in the box — to the page console, so a report
+     * from an application that went wrong says exactly which step went wrong
+     * rather than only that it did. It carries no answers, only their source
+     * and length, so a report can be shared without sharing a profile.
+     */
+    try { logFillReport(fields, plans, result); } catch {}
 
     watchUnmatched();
     queueAnswersFromForm();
