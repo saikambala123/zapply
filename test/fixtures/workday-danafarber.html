@@ -1,0 +1,334 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Information Security Analyst — Dana-Farber</title>
+<style>
+body{font-family:system-ui;padding:20px;max-width:900px}
+.f{margin-bottom:16px}
+label.l{display:block;font-weight:600;font-size:13px;margin-bottom:3px}
+input[type=text],textarea{padding:7px;border:1px solid #ccd;border-radius:5px;width:420px}
+h2{margin:22px 0 8px}h3{margin:18px 0 6px}h4{margin:14px 0 6px}
+.wd-date{display:inline-flex;align-items:center;border:1px solid #ccd;border-radius:5px;padding:2px 6px}
+.wd-date input{border:0;text-align:center;font:inherit;padding:4px 2px}
+.wd-date input[data-automation-id$="Month-input"],.wd-date input[data-automation-id$="Day-input"]{width:2.4em}
+.wd-date input[data-automation-id$="Year-input"]{width:3.6em}
+.sep{color:#666;padding:0 2px}
+.wd-select{width:420px;padding:7px;border:1px solid #ccd;border-radius:5px;background:#fff;text-align:left;cursor:pointer}
+.wd-menu{position:absolute;background:#fff;border:1px solid #ccd;border-radius:5px;z-index:50;min-width:300px;max-height:240px;overflow:auto}
+.wd-menu[hidden]{display:none}
+.wd-opt{padding:7px 10px;cursor:pointer}
+.wd-opt:hover{background:#eef}
+.wd-opt[aria-selected="true"]{background:#dfe}
+.crumb{padding:6px 10px;font-size:12px;color:#555;border-bottom:1px solid #eee}
+.pill{display:inline-block;background:#e8eefc;border-radius:3px;padding:2px 6px;margin:2px;font-size:12px}
+</style></head><body>
+<div data-automation-id="applyFlowPage">
+
+<!-- ================= 1. My Information ================= -->
+<h2>My Information</h2>
+
+<!-- Workday multi-select "prompt": a tree of parent categories with children.
+     LinkedIn lives under "Social Media", two levels down. -->
+<div class="f" data-automation-id="formField-source">
+  <label class="l" id="src-l">How Did You Hear About Us? *</label>
+  <div data-automation-id="multiSelectContainer" aria-labelledby="src-l">
+    <div id="src-pills"></div>
+    <button type="button" class="wd-select" id="src-btn" role="combobox"
+            aria-haspopup="listbox" aria-expanded="false" aria-labelledby="src-l"
+            data-automation-id="multiselectInputContainer">Select One or more</button>
+    <div class="wd-menu" id="src-menu" role="listbox" hidden></div>
+  </div>
+</div>
+
+<div class="f" data-automation-id="formField-formerEmployee">
+  <fieldset style="border:0;padding:0;margin:0">
+    <legend class="l">Are you a former employee of Dana-Farber Cancer Institute? *</legend>
+    <label><input type="radio" name="former" value="Yes"> Yes</label>
+    <label><input type="radio" name="former" value="No"> No</label>
+  </fieldset>
+</div>
+
+<!-- ================= 2. My Experience ================= -->
+<h2>My Experience</h2>
+<h3>Education</h3>
+<div data-automation-id="education-1">
+  <h4>Education 1</h4>
+
+  <!-- Workday's school field: a typeahead that only commits on Enter or on
+       clicking the row. Typing alone leaves the box holding uncommitted text
+       that Workday discards on Save. -->
+  <div class="f" data-automation-id="formField-school">
+    <label class="l" id="sch-l">School or University *</label>
+    <div data-automation-id="multiSelectContainer" aria-labelledby="sch-l">
+      <div id="sch-pills"></div>
+      <input id="sch" type="text" role="combobox" aria-expanded="false"
+             aria-autocomplete="list" aria-labelledby="sch-l" autocomplete="off"
+             data-automation-id="searchBox">
+      <div class="wd-menu" id="sch-menu" role="listbox" hidden></div>
+    </div>
+  </div>
+
+  <div class="f" data-automation-id="formField-degree">
+    <label class="l" id="deg-l">Degree *</label>
+    <button type="button" class="wd-select" id="deg-btn" role="combobox"
+            aria-haspopup="listbox" aria-expanded="false" aria-labelledby="deg-l">Select One</button>
+    <div class="wd-menu" id="deg-menu" role="listbox" hidden></div>
+  </div>
+
+  <div class="f" data-automation-id="formField-fieldOfStudy">
+    <label class="l" id="fos-l">Field of Study</label>
+    <div data-automation-id="multiSelectContainer" aria-labelledby="fos-l">
+      <div id="fos-pills"></div>
+      <input id="fos" type="text" role="combobox" aria-expanded="false"
+             aria-autocomplete="list" aria-labelledby="fos-l" autocomplete="off"
+             data-automation-id="searchBox">
+      <div class="wd-menu" id="fos-menu" role="listbox" hidden></div>
+    </div>
+  </div>
+</div>
+
+<!-- ================= 3. Application Questions 1 of 2 ================= -->
+<h2>Application Questions 1 of 2</h2>
+
+<div class="f" data-automation-id="formField-relocate">
+  <label class="l" id="rel-l">Are you willing to relocate? *</label>
+  <button type="button" class="wd-select" id="rel-btn" role="combobox"
+          aria-haspopup="listbox" aria-expanded="false" aria-labelledby="rel-l">Select One</button>
+  <div class="wd-menu" id="rel-menu" role="listbox" hidden></div>
+</div>
+
+<div class="f" data-automation-id="formField-age">
+  <label class="l" id="age-l">Are you 18 years or older? *</label>
+  <button type="button" class="wd-select" id="age-btn" role="combobox"
+          aria-haspopup="listbox" aria-expanded="false" aria-labelledby="age-l">Select One</button>
+  <div class="wd-menu" id="age-menu" role="listbox" hidden></div>
+</div>
+
+<!-- The long question that was wrongly answered "Yes". Nothing in the profile
+     answers it, and the honest answer is No. -->
+<div class="f" data-automation-id="formField-cure">
+  <label class="l" id="cure-l">Have you ever, or are you currently participating in a student training program offered by Dana-Farber's Office of Workforce Development, or a scientific skills training or research experience program offered by Dana-Farber/Harvard Cancer Center (CURE, YES for CURE, or SPARC)? *</label>
+  <button type="button" class="wd-select" id="cure-btn" role="combobox"
+          aria-haspopup="listbox" aria-expanded="false" aria-labelledby="cure-l">Select One</button>
+  <div class="wd-menu" id="cure-menu" role="listbox" hidden></div>
+</div>
+
+<!-- ================= 4. Application Questions 2 of 2 ================= -->
+<h2>Application Questions 2 of 2</h2>
+
+<div class="f" data-automation-id="formField-workAuth">
+  <label class="l" id="auth-l">Are you currently authorized to work in the United States? *</label>
+  <button type="button" class="wd-select" id="auth-btn" role="combobox"
+          aria-haspopup="listbox" aria-expanded="false" aria-labelledby="auth-l">Select One</button>
+  <div class="wd-menu" id="auth-menu" role="listbox" hidden></div>
+</div>
+
+<div class="f" data-automation-id="formField-sponsorship">
+  <label class="l" id="spon-l">Do you now, or will you in the future, require visa sponsorship to work in the United States? *</label>
+  <button type="button" class="wd-select" id="spon-btn" role="combobox"
+          aria-haspopup="listbox" aria-expanded="false" aria-labelledby="spon-l">Select One</button>
+  <div class="wd-menu" id="spon-menu" role="listbox" hidden></div>
+</div>
+
+<div class="f" data-automation-id="formField-hsd">
+  <label class="l" id="hsd-l">Do you have a High School Diploma or GED? *</label>
+  <button type="button" class="wd-select" id="hsd-btn" role="combobox"
+          aria-haspopup="listbox" aria-expanded="false" aria-labelledby="hsd-l">Select One</button>
+  <div class="wd-menu" id="hsd-menu" role="listbox" hidden></div>
+</div>
+
+<!-- ================= 5. Self Identify (CC-305) ================= -->
+<h2>Voluntary Self-Identification of Disability</h2>
+<p>Form CC-305</p>
+<p>OMB Control Number 1250-0005</p>
+<p>Expires 04/30/2026</p>
+
+<div class="f" data-automation-id="formField-name">
+  <label class="l" for="sid-name">Name</label>
+  <input id="sid-name" type="text">
+</div>
+<div class="f" data-automation-id="formField-employeeId">
+  <label class="l" for="sid-eid">Employee ID (if applicable)</label>
+  <input id="sid-eid" type="text">
+</div>
+<div class="f" data-automation-id="formField-signatureDate">
+  <label class="l" id="sid-date-l">Date</label>
+  <div class="wd-date" role="group" data-automation-id="dateInputWrapper" aria-labelledby="sid-date-l">
+    <div data-automation-id="dateSectionMonth-display">
+      <input id="sid-m" type="text" role="spinbutton" data-automation-id="dateSectionMonth-input"
+             aria-label="Month" aria-valuemin="1" aria-valuemax="12" aria-valuetext="MM" autocomplete="off">
+    </div><span class="sep">/</span>
+    <div data-automation-id="dateSectionDay-display">
+      <input id="sid-d" type="text" role="spinbutton" data-automation-id="dateSectionDay-input"
+             aria-label="Day" aria-valuemin="1" aria-valuemax="31" aria-valuetext="DD" autocomplete="off">
+    </div><span class="sep">/</span>
+    <div data-automation-id="dateSectionYear-display">
+      <input id="sid-y" type="text" role="spinbutton" data-automation-id="dateSectionYear-input"
+             aria-label="Year" aria-valuemin="1900" aria-valuemax="2100" aria-valuetext="YYYY" autocomplete="off">
+    </div>
+    <button type="button" data-automation-id="dateIcon" aria-label="Calendar">&#128197;</button>
+  </div>
+</div>
+
+<h2>Terms and Conditions</h2>
+<div class="f" data-automation-id="formField-agreement">
+  <p>I agree to the Terms and understand information will be used as described here and in our Privacy Policy.</p>
+  <label><input type="checkbox" id="agree" data-automation-id="createAccountCheckbox"> I agree.</label>
+</div>
+
+</div>
+
+<script>
+/* ---- Workday's single-select button dropdowns ---- */
+const SINGLE = {
+  "rel": ["Yes", "No"],
+  "age": ["Yes", "No"],
+  "cure": ["Yes", "No"],
+  "auth": ["Yes", "No"],
+  "spon": ["Yes", "No"],
+  "hsd": ["Yes", "No"],
+  "deg": ["High School", "Bachelor's Degree", "Master's Degree", "Doctorate"],
+};
+Object.entries(SINGLE).forEach(([id, opts]) => {
+  const btn = document.getElementById(id + "-btn");
+  const menu = document.getElementById(id + "-menu");
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    const open = !menu.hidden;
+    if (open) { menu.hidden = true; btn.setAttribute("aria-expanded", "false"); return; }
+    menu.innerHTML = "";
+    opts.forEach((o) => {
+      const d = document.createElement("div");
+      d.className = "wd-opt"; d.setAttribute("role", "option"); d.textContent = o;
+      d.addEventListener("mousedown", (e) => e.preventDefault());
+      d.addEventListener("click", () => {
+        btn.textContent = o; btn.dataset.value = o;
+        menu.hidden = true; btn.setAttribute("aria-expanded", "false");
+        btn.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      menu.appendChild(d);
+    });
+    menu.hidden = false; btn.setAttribute("aria-expanded", "true");
+  });
+});
+
+/* ---- The "How did you hear about us" tree ----
+   Top level is categories; LinkedIn only appears after opening Social Media. */
+const NO_LI = new URLSearchParams(location.search).get("nolinkedin") === "1";
+const TREE = NO_LI ? {
+  "": ["Job Boards", "Social Media", "Employee Referral", "Career Fair", "University Event"],
+  "Job Boards": ["Indeed", "Glassdoor", "ZipRecruiter"],
+  "Social Media": ["Facebook", "Instagram", "X (Twitter)"],
+} : {
+  "": ["Job Boards", "Social Media", "Employee Referral", "Career Fair", "University Event"],
+  "Job Boards": ["Indeed", "Glassdoor", "ZipRecruiter"],
+  "Social Media": ["Facebook", "Instagram", "LinkedIn", "X (Twitter)"],
+};
+let srcPath = "";
+const srcBtn = document.getElementById("src-btn");
+const srcMenu = document.getElementById("src-menu");
+window.__srcChosen = [];
+
+function renderSrc() {
+  srcMenu.innerHTML = "";
+  if (srcPath) {
+    const back = document.createElement("div");
+    back.className = "crumb"; back.textContent = "\u2190 Back";
+    back.addEventListener("mousedown", (e) => e.preventDefault());
+    back.addEventListener("click", () => { srcPath = ""; renderSrc(); });
+    srcMenu.appendChild(back);
+  }
+  (TREE[srcPath] || []).forEach((label) => {
+    const d = document.createElement("div");
+    d.className = "wd-opt"; d.setAttribute("role", "option"); d.textContent = label;
+    const isParent = Boolean(TREE[label]);
+    if (isParent) d.setAttribute("aria-haspopup", "true");
+    d.addEventListener("mousedown", (e) => e.preventDefault());
+    d.addEventListener("click", () => {
+      if (isParent && !srcPath && !d.dataset.opened) { d.dataset.opened = "1"; srcPath = label; renderSrc(); return; }
+      window.__srcChosen.push(label);
+      d.setAttribute("aria-selected", "true");
+      const pill = document.createElement("span");
+      pill.className = "pill"; pill.textContent = label;
+      document.getElementById("src-pills").appendChild(pill);
+      srcMenu.hidden = true; srcBtn.setAttribute("aria-expanded", "false");
+      srcBtn.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    srcMenu.appendChild(d);
+  });
+}
+srcBtn.addEventListener("click", () => {
+  if (!srcMenu.hidden) { srcMenu.hidden = true; srcBtn.setAttribute("aria-expanded", "false"); return; }
+  srcPath = ""; renderSrc();
+  srcMenu.hidden = false; srcBtn.setAttribute("aria-expanded", "true");
+});
+
+/* ---- Workday typeaheads that only commit on Enter or click ---- */
+const SCHOOLS = ["Osmania University", "Oxford Brookes University", "Ohio State University"];
+const FIELDS = ["Computer Science", "Computer Engineering", "Information Systems"];
+
+function typeahead(inputId, menuId, pillsId, list, store) {
+  const input = document.getElementById(inputId);
+  const menu = document.getElementById(menuId);
+  const pills = document.getElementById(pillsId);
+  window[store] = null;
+
+  const commit = (label) => {
+    window[store] = label;
+    const pill = document.createElement("span");
+    pill.className = "pill"; pill.textContent = label;
+    pills.innerHTML = ""; pills.appendChild(pill);
+    input.value = "";
+    menu.hidden = true; input.setAttribute("aria-expanded", "false");
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+
+  const render = () => {
+    const q = input.value.trim().toLowerCase();
+    menu.innerHTML = "";
+    if (!q) { menu.hidden = true; return; }
+    const hits = list.filter((s) => s.toLowerCase().includes(q));
+    if (!hits.length) { menu.innerHTML = '<div class="wd-opt">No results</div>'; menu.hidden = false; return; }
+    hits.forEach((s, i) => {
+      const d = document.createElement("div");
+      d.className = "wd-opt"; d.setAttribute("role", "option"); d.textContent = s;
+      if (i === 0) d.setAttribute("data-active", "true");
+      d.addEventListener("mousedown", (e) => e.preventDefault());
+      d.addEventListener("click", () => commit(s));
+      menu.appendChild(d);
+    });
+    menu.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+  };
+
+  input.addEventListener("input", render);
+  input.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const active = menu.querySelector('[data-active="true"]') || menu.querySelector('[role="option"]');
+    if (active && !menu.hidden) commit(active.textContent);
+  });
+  /* Blur without committing throws the typed text away, exactly like Workday. */
+  input.addEventListener("blur", () => { setTimeout(() => { input.value = ""; menu.hidden = true; }, 10); });
+}
+typeahead("sch", "sch-menu", "sch-pills", SCHOOLS, "__school");
+typeahead("fos", "fos-menu", "fos-pills", FIELDS, "__fieldOfStudy");
+
+/* ---- What the page believes it holds ---- */
+window.__state = () => ({
+  source: window.__srcChosen.slice(),
+  school: window.__school,
+  fieldOfStudy: window.__fieldOfStudy,
+  degree: document.getElementById("deg-btn").dataset.value || "",
+  relocate: document.getElementById("rel-btn").dataset.value || "",
+  age: document.getElementById("age-btn").dataset.value || "",
+  cure: document.getElementById("cure-btn").dataset.value || "",
+  workAuth: document.getElementById("auth-btn").dataset.value || "",
+  sponsorship: document.getElementById("spon-btn").dataset.value || "",
+  hsd: document.getElementById("hsd-btn").dataset.value || "",
+  formerEmployee: document.querySelector('input[name="former"]:checked')?.value || "",
+  selfIdName: document.getElementById("sid-name").value,
+  employeeId: document.getElementById("sid-eid").value,
+  date: [document.getElementById("sid-m").value, document.getElementById("sid-d").value, document.getElementById("sid-y").value],
+  agree: document.getElementById("agree").checked,
+});
+</script>
+</body></html>
