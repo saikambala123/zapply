@@ -349,6 +349,37 @@
 
     // 3. Direct attributes
     push(el.getAttribute("aria-label"));
+
+    /**
+     * A date segment says "Month", never what the date is *for*.
+     *
+     * Workday renders one date as two or three spinbuttons, and each carries
+     * only its own part name. The field's actual label — "Date", "From",
+     * "Start Date" — lives on the wrapper. Without it the CC-305 signature date
+     * derived the label "Month | dateSectionMonth-input", matched no rule at
+     * all, and was left blank on every application that ends with that form.
+     */
+    try {
+      const group = el.closest?.(
+        '[data-automation-id*="dateInput" i], [data-automation-id*="dateWidget" i], ' +
+        '[data-automation-id*="datePicker" i], [class*="dateInput" i], [role="group"]'
+      );
+      if (group && group !== el) {
+        const named = group.getAttribute("aria-labelledby");
+        String(named || "").split(/\s+/).forEach((id) => {
+          if (!id) return;
+          const node = document.getElementById(id);
+          if (node && !node.contains(el)) push(visibleText(node));
+        });
+        push(group.getAttribute("aria-label"));
+        const wrapper = group.parentElement?.closest?.('[data-automation-id^="formField" i]');
+        if (wrapper) {
+          const own = wrapper.querySelector("label, legend");
+          if (own && !own.contains(el)) push(visibleText(own));
+        }
+      }
+    } catch {}
+
     push(el.getAttribute("placeholder"));
     push(el.getAttribute("title"));
     push(el.getAttribute("data-label"));
@@ -2647,10 +2678,65 @@
     }
     el.__zapplyNoMatch = false;
 
+    /**
+     * Clicking a category opens it; it does not answer the question.
+     *
+     * Workday's "How Did You Hear About Us?" is a tree — LinkedIn lives under
+     * "Social Media", one level down. "Social Media" is also a synonym for
+     * LinkedIn, so it won the top-level scoring outright and was clicked. That
+     * click opened the submenu, the code took it for a completed selection,
+     * and the field was left empty on every application while reporting
+     * success. The children were right there on screen, unread.
+     *
+     * So: after the click, if the menu is still open and now shows a different
+     * set of rows, that was a drill, not a choice. Score the rows it opened and
+     * take the best one — the real answer is usually among them.
+     */
+    const optionsBeforeClick = optionSignature(menuOptions(session));
+
     try { best.scrollIntoView?.({ block: "nearest" }); } catch {}
     try { fire(best, "pointerdown", "mousedown", "pointerup", "mouseup"); } catch {}
     try { best.click?.(); } catch {}
     await wait(90);
+
+    if (menusOpen()) {
+      const after = menuOptions(session);
+      const parentText = normalizeChoiceText(best.textContent || "");
+      if (after.length && optionSignature(after) !== optionsBeforeClick) {
+        const leaves = after.filter((o) => normalizeChoiceText(o.textContent || "") !== parentText);
+        let child = null, childScore = 0;
+        for (const option of leaves) {
+          const score = optionScoreForTarget(option, targets, hint);
+          if (score > childScore) { childScore = score; child = option; }
+        }
+        if (child && childScore >= 55) {
+          best = child;
+          bestScore = childScore;
+          try { best.scrollIntoView?.({ block: "nearest" }); } catch {}
+          try { fire(best, "pointerdown", "mousedown", "pointerup", "mouseup"); } catch {}
+          try { best.click?.(); } catch {}
+          await wait(90);
+        } else {
+          /**
+           * The category was the answer after all.
+           *
+           * Asked for LinkedIn on a tree that does not list it, opening
+           * "Social Media" and finding nothing better used to leave the field
+           * empty — the category standing right there, and a required question
+           * unanswered. The synonym list already ranks the acceptable
+           * substitutes in order (LinkedIn, then social media, then job
+           * board), so the category we opened is the best remaining answer.
+           * Most trees select a parent on a second click.
+           */
+          const parent = best;
+          if (document.contains(parent)) {
+            try { fire(parent, "pointerdown", "mousedown", "pointerup", "mouseup"); } catch {}
+            try { parent.click?.(); } catch {}
+            await wait(90);
+          }
+        }
+      }
+    }
 
     // Some listboxes commit on Enter rather than click, but only try that while
     // the menu is genuinely still open — pressing Enter on a closed Workday

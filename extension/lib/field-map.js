@@ -1227,9 +1227,66 @@
       key: "school",
       weight: 10,
       match: [/\b(school|university|college|institution)\b/i],
-      deny: [/high\s*school\s*only|graduated\b.*\?/i],
+      /**
+       * "Do you have a High School Diploma or GED?" is a yes/no question that
+       * happens to contain the word "school". It was matching here and being
+       * answered with the name of the applicant's university — a nonsense
+       * answer to a required question, on a form that then would not submit.
+       *
+       * The shape gives it away: a question asking whether they *have* a
+       * qualification, rather than a field asking which institution.
+       */
+      deny: [
+        /high\s*school\s*only|graduated\b.*\?/i,
+        /\b(do|did|have)\s*you\s*(have|hold|complete|attend|graduate)/i,
+        /\bhigh\s*school\s*(diploma|degree|equivalen)/i,
+        /\bge\.?d\.?\b/i,
+        /\b(diploma|certificate)\s*or\s*ged\b/i,
+      ],
       type: ["text", "select"],
       value: (p, _el, _label, index) => latestSchool(p, index).school,
+    },
+    {
+      /**
+       * The box that blocks the form.
+       *
+       * "I agree to the Terms", "I certify the above is accurate", the privacy
+       * acknowledgement on a Workday account signup — every one of them is
+       * required, none of them has an answer in the profile, and leaving them
+       * unticked stops the application dead with "Please check the box to
+       * continue". Left unmatched, this one was being claimed by
+       * `disabilityStatus` — the CC-305 heading was in its section context —
+       * so it was not merely unticked, it was being read as a disability
+       * declaration.
+       *
+       * Consent to *terms* is ticked. Consent to be *marketed at* is not: those
+       * are opt-ins the applicant should make themselves, and they are denied
+       * below rather than left to chance.
+       */
+      key: "consentAgree",
+      // Above disabilityStatus (11) and the demographic rules, which otherwise
+      // claim any checkbox sitting inside a self-identification section.
+      weight: 15,
+      match: [
+        /\bi\s*(agree|consent|accept|acknowledge|certify|confirm)\b/i,
+        /\bterms\s*(and|&|of)\s*(conditions|use|service)\b/i,
+        /\bprivacy\s*(policy|notice|statement)\b/i,
+        /\bagree\s*to\s*the\s*terms\b/i,
+        /\bhave\s*read\s*and\s*(agree|accept|understood?)\b/i,
+        /\backnowledge\s*(and\s*agree|that|the)\b/i,
+        /\bcertify\s*that\s*(the|all|my)\b/i,
+      ],
+      deny: [
+        THIRD_PARTY,
+        // Opt-ins, not conditions of applying. The applicant chooses these.
+        /\b(marketing|promotional|newsletter|subscribe|mailing\s*list|job\s*alerts?|talent\s*(community|network)|future\s*(roles|opportunities)|contact\s*me\s*about)\b/i,
+        // A disability or veteran declaration is a statement about them, not
+        // an agreement to terms, even when phrased with "I certify".
+        /\b(disabilit|veteran|ethnicit|race|gender)\b/i,
+      ],
+      type: ["checkbox"],
+      value: () => "Yes",
+      options: { Yes: ["yes", "i agree", "agree", "accept", "true", "on"] },
     },
     {
       key: "degree",

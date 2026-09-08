@@ -204,11 +204,32 @@ async function pushQueue() {
     // with responsesSaved=0 when the question was rejected by validation. That
     // made the answer disappear from Pending while never reaching Saved Answers.
     const reported = Array.isArray(res.data?.savedKeys) ? res.data.savedKeys : null;
+    /**
+     * An answer the server will never accept must not sit in the queue.
+     *
+     * Only confirmed keys were being removed, which is right for a transient
+     * failure and wrong for a permanent one: an answer the server rejects on
+     * validation is rejected identically on every retry, so it stayed in the
+     * queue for good. Sync then reported failure and left the count untouched
+     * no matter how often it was pressed, and the answers behind it — perfectly
+     * valid ones — never got a clean batch to travel in.
+     */
+    const rejected = new Set(Array.isArray(res.data?.rejectedKeys) ? res.data.rejectedKeys : []);
     const { pendingResponses: now } = await store.get("pendingResponses");
     let remaining;
     if (reported) {
       const confirmed = new Set(reported);
-      remaining = (now ?? []).filter((r) => !confirmed.has(queueKey(r.question)));
+      remaining = (now ?? []).filter((r) => {
+        const key = queueKey(r.question);
+        /**
+         * An answer with no key at all cannot be stored and cannot be matched
+         * against anything the server reports, so it can never be confirmed
+         * and never be rejected — it simply sits in the queue forever, holding
+         * Sync in a permanent failure state. Drop it here.
+         */
+        if (!key) return false;
+        return !confirmed.has(key) && !rejected.has(key);
+      });
     } else if ((res.data?.responsesSaved ?? 0) >= responses.length) {
       /**
        * A server that does not say *which* answers it wrote.
@@ -232,12 +253,24 @@ async function pushQueue() {
   // The server reports what it actually wrote; the local count is only what we
   // offered it. A response with zero confirmed keys is not a successful sync.
   const confirmedCount = res.ok ? (res.data?.responsesSaved ?? 0) : 0;
+  const rejectedCount = res.ok && Array.isArray(res.data?.rejectedKeys) ? res.data.rejectedKeys.length : 0;
+  /**
+   * A batch the server threw out is finished, not pending.
+   *
+   * Reporting it as a failure invited a retry that could only fail the same
+   * way, and the queue it left behind blocked every later answer from ever
+   * reporting success. Now those answers are dropped and said so plainly.
+   */
+  const allRejected = res.ok && responses.length > 0 && confirmedCount === 0 && rejectedCount >= responses.length;
   return {
     ...res,
-    ok: res.ok && (confirmedCount > 0 || responses.length === 0),
+    ok: res.ok && (confirmedCount > 0 || responses.length === 0 || allRejected),
     pushed: confirmedCount,
+    rejected: rejectedCount,
     error: res.ok && responses.length && confirmedCount === 0
-      ? "Zapply could not save these answers. They remain pending; review the question and try Sync again."
+      ? (allRejected
+          ? `Zapply could not store ${rejectedCount} answer${rejectedCount === 1 ? "" : "s"} — the question text was empty or unusable. They have been removed from the queue.`
+          : "Zapply could not save these answers. They remain pending; review the question and try Sync again.")
       : res.error,
   };
 }
