@@ -348,11 +348,7 @@
     const type = (el?.getAttribute?.("type") || el?.type || "").toLowerCase();
     if (type === "date") return `${yyyy}-${mm}-${dd}`;
     if (type === "month") return `${yyyy}-${mm}`;
-    // Workday/ATS text date controls commonly display and validate the
-    // voluntary self-identification signature date as MM-DD-YYYY. Keep the
-    // native date/month formats unchanged, but never write slash-formatted
-    // dates into a text box in the CC-305 flow.
-    return `${mm}-${dd}-${yyyy}`;
+    return `${mm}/${dd}/${yyyy}`;
   };
 
   const dateForField = (raw, el) => {
@@ -478,7 +474,7 @@
    * outright are used, and an explicit stored answer always wins over it.
    */
   const SETTLED_STATUS =
-    /\b(u\.?s\.?\s*)?citizen\b|\bpermanent\s*resident\b|\bgreen\s*card\b|\bindefinite\s*leave\b|\bright\s*to\s*work\b/i;
+    /\b(u\.?s\.?\s*)?citizen\b|\bnational\b|\bpermanent\s*resident\b|\bgreen\s*card\b|\bcitizenship\b|\bindefinite\s*leave\b|\bright\s*to\s*work\b/i;
 
   const authorizedFor = (p) => {
     const stored = W(p).authorizedToWork;
@@ -1229,7 +1225,6 @@
     /* ---------------- Education ---------------- */
     {
       key: "school",
-      profileOnly: false,
       weight: 10,
       match: [/\b(school|university|college|institution)\b/i],
       deny: [/high\s*school\s*only|graduated\b.*\?/i],
@@ -1238,7 +1233,6 @@
     },
     {
       key: "degree",
-      profileOnly: true,
       weight: 10,
       match: [/\bdegree\b/i, /\beducation\s*level\b/i, /\bhighest\s*(level\s*of\s*)?education\b/i],
       deny: [/field|major|subject|date/i],
@@ -1247,7 +1241,6 @@
     },
     {
       key: "fieldOfStudy",
-      profileOnly: true,
       weight: 11,
       match: [/\b(field\s*of\s*study|major|discipline|concentration|area\s*of\s*study)\b/i],
       type: ["text", "select"],
@@ -1263,7 +1256,6 @@
     },
     {
       key: "gpa",
-      profileOnly: true,
       weight: 11,
       match: [/\bgpa\b/i, /\bgrade\s*point\b/i],
       type: ["text", "number"],
@@ -1271,7 +1263,6 @@
     },
     {
       key: "graduationDate",
-      profileOnly: true,
       weight: 9,
       match: [/\b(graduation|grad)\s*(date|year|month)\b/i, /\b(expected|anticipated)\s*graduation\b/i],
       type: ["text", "date", "month", "select"],
@@ -1280,7 +1271,6 @@
     /* Split Month / Day / Year controls inside an education block. */
     {
       key: "educationDatePart",
-      profileOnly: true,
       weight: 16,
       match: [
         /\b(month|year|day|mm|dd|yy(?:yy)?)\b.*\b(education|school|college|university|degree|academic)\b/i,
@@ -1301,7 +1291,6 @@
     },
     {
       key: "educationStartMonth",
-      profileOnly: true,
       weight: 13,
       match: [
         /\b(education|school|college|university)\b.*\b(start|begin)\w*\s*date\s*month\b/i,
@@ -1313,7 +1302,6 @@
     },
     {
       key: "educationStartYear",
-      profileOnly: true,
       weight: 13,
       match: [
         /\b(education|school|college|university)\b.*\b(start|begin)\w*\s*date\s*year\b/i,
@@ -1324,7 +1312,6 @@
     },
     {
       key: "educationEndMonth",
-      profileOnly: true,
       weight: 13,
       match: [
         /\b(education|school|college|university)\b.*\bend\s*date\s*month\b/i,
@@ -1337,7 +1324,6 @@
     },
     {
       key: "educationEndYear",
-      profileOnly: true,
       weight: 13,
       match: [
         /\b(education|school|college|university)\b.*\bend\s*date\s*year\b/i,
@@ -1577,7 +1563,6 @@
     {
       key: "howDidYouHear",
       weight: 11,
-      profileOnly: true,
       match: [/\bhow\s*did\s*you\s*(hear|find|learn)\b/i, /\bsource\s*of\s*(referral|application)\b/i, /\bwhere\s*did\s*you\s*(hear|find)\b/i],
       type: ["select", "text", "radio"],
       value: () => "LinkedIn",   // Always use LinkedIn as the canonical source answer.
@@ -1591,7 +1576,9 @@
         // Ordered most specific first. "Job board" used to outrank "social
         // media" and "professional network", so a list offering LinkedIn only
         // under one of those was answered with the wrong category.
-        LinkedIn: ["linkedin", "linked in", "professional network", "professional networking"],
+        LinkedIn: ["linkedin", "linked in", "professional network", "professional networking",
+                   "social media", "social network", "job board", "job boards", "job site",
+                   "online", "internet", "website"],
         Indeed: ["indeed", "job board", "job boards", "online", "internet", "job site"],
         Glassdoor: ["glassdoor", "job board", "job boards", "online"],
         Monster: ["monster", "job board", "job boards", "online"],
@@ -1610,22 +1597,6 @@
         Google: ["google", "search engine", "online", "internet"],
         Other: ["other"],
       },
-    },
-    {
-      key: "applicationConsent",
-      weight: 12,
-      match: [
-        /\b(i\s+)?agree\b.*\b(terms|conditions|consent|privacy|acknowledg)/i,
-        /\b(consent|acknowledg)\b.*\b(terms|conditions|application|privacy)/i,
-        /\b(terms\s+and\s+conditions|privacy\s+policy)\b/i,
-      ],
-      type: ["checkbox", "radio", "select"],
-      // The applicant explicitly requested that standard application-consent
-      // checkboxes/radios be accepted automatically during autofill. This is
-      // intentionally limited to controls whose own label is an agreement or
-      // acknowledgement; it never turns an arbitrary checkbox into Yes.
-      value: () => "Yes",
-      options: { Yes: ["yes", "agree", "i agree", "consent", "acknowledge", "true"] },
     },
     {
       key: "securityClearance",

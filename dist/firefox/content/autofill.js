@@ -1395,8 +1395,8 @@
          */
         ok = false;
       } else {
-        ok = M.setTextValue(el, String(value), field.label);
-        if (!ok) { await sleep(60); ok = M.setTextValue(el, String(value), field.label); }
+        ok = M.setTextValue(el, String(value));
+        if (!ok) { await sleep(60); ok = M.setTextValue(el, String(value)); }
       }
     } catch {
       ok = false;
@@ -1544,13 +1544,8 @@
       Boolean(rule?.identity && !rule?.eeo) ||
       /\b(e-?mail|phone|mobile|telephone|country\s*code|area\s*code|extension|first\s*name|last\s*name|middle\s*name|full\s*name|date\s*of\s*birth|address\s*line|postal|zip\s*code)\b/i
         .test(String(field?.label ?? "").split("|")[0]);
-    const protectedLegal =
-      Boolean(rule?.profileOnly) ||
-      /\b(work\s*authoriz|authorized\s+to\s+work|right\s+to\s+work|sponsor(?:ship|ed)|visa|immigration)\b/i
-        .test(String(field?.label ?? "").split("|")[0]);
 
-    const allowSavedForRule = !profileOnly || rule?.key === "school";
-    if (saved?.answer && allowSavedForRule && !protectedIdentity && !protectedLegal) {
+    if (saved?.answer && !profileOnly && !protectedIdentity) {
       return { status: "fill", key: "saved-answer", value: saved.answer, rule, source: "saved" };
     }
 
@@ -1578,10 +1573,10 @@
        * does not have it, it stays empty — no saved answer from a different
        * application, no generated sentence. See `experienceLocation`.
        */
-      if (rule.profileOnly && rule.key !== "school") return { status: "skipped", key: rule.key };
+      if (rule.profileOnly) return { status: "skipped", key: rule.key };
 
       // No profile value: a close saved answer is the next best source.
-      if (saved?.answer && (rule.key === "school" || !rule.profileOnly)) {
+      if (saved?.answer) {
         return { status: "fill", key: "saved-answer", value: saved.answer, rule, source: "saved" };
       }
 
@@ -1656,11 +1651,7 @@
     /(voluntary\s+self[-\s]?identification|self[-\s]?identification\s+of\s+disability|form\s*cc-?305|cc-?305|section\s*503|omb\s*control\s*number\s*1250|voluntary\s+disclosure|equal\s+employment\s+opportunity|eeo)/i;
 
   function offLimitsToAi(field) {
-    // Never let generated answers fill legal/eligibility declarations or any
-    // profile-owned field. These must come from the user's profile or remain
-    // blank; an AI guess here can silently submit the wrong work status.
-    if (field.rule?.identity || field.rule?.eeo || field.rule?.blank || field.rule?.profileOnly) return true;
-    if (/\b(work\s*authoriz|authorized\s+to\s+work|right\s+to\s+work|sponsor(?:ship|ed)|visa|immigration)\b/i.test(field.label || "")) return true;
+    if (field.rule?.identity || field.rule?.eeo || field.rule?.blank) return true;
     if (SELF_ID_LABEL_RE.test(field.label || "")) return true;
     try {
       const section = M.visibleText(field.el.closest("fieldset, section, [role='group']"));
