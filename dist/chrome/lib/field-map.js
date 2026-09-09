@@ -340,7 +340,7 @@
    * US application expects MM/DD/YYYY. Shared by `todayDate` and `selfIdDate`
    * so the two can never drift apart.
    */
-  const todayFor = (el) => {
+  const todayFor = (el, fallbackSeparator = "/") => {
     const now = new Date();
     const yyyy = String(now.getFullYear());
     const mm = String(now.getMonth() + 1).padStart(2, "0");
@@ -350,17 +350,23 @@
       el?.getAttribute?.("name"), el?.getAttribute?.("data-automation-id")].filter(Boolean).join(" ");
     if (type === "date") return `${yyyy}-${mm}-${dd}`;
     if (type === "month") return `${yyyy}-${mm}`;
-    if (el?.tagName === "SELECT") {
-      if (/year|yyyy/i.test(hint)) return yyyy;
-      if (/day|\bdd\b/i.test(hint)) return String(now.getDate());
-      if (/month|\bmm\b/i.test(hint)) return MONTH_NAMES[now.getMonth()];
+    const yearPart = /year|yyyy/i.test(hint);
+    const dayPart = /day|\bdd\b/i.test(hint);
+    const monthPart = /month|\bmm\b/i.test(hint);
+    if (yearPart && !monthPart && !dayPart) return yyyy;
+    if (dayPart && !monthPart && !yearPart) {
+      return el?.tagName === "SELECT" ? String(now.getDate()) : dd;
+    }
+    if (monthPart && !dayPart && !yearPart) {
+      return el?.tagName === "SELECT" ? MONTH_NAMES[now.getMonth()] : mm;
     }
     const format = hint.match(/(mm|dd|yyyy)\s*([-/.])\s*(mm|dd|yyyy)\s*\2\s*(mm|dd|yyyy)/i);
     if (format) {
       const parts = { mm, dd, yyyy };
       return [format[1], format[3], format[4]].map((part) => parts[part.toLowerCase()]).join(format[2]);
     }
-    return `${mm}/${dd}/${yyyy}`;
+    const separator = ["-", "/", "."].includes(fallbackSeparator) ? fallbackSeparator : "/";
+    return `${mm}${separator}${dd}${separator}${yyyy}`;
   };
 
   const dateForField = (raw, el) => {
@@ -486,7 +492,7 @@
   const authorizedFor = (p) => yesNo(W(p).authorizedToWork);
   const sponsorshipFor = (p) => yesNo(W(p).requireSponsorship);
   const SPONSORSHIP_INVERTED =
-    /\bwithout\b.{0,100}\bsponsor|\b(?:not|no|never)\s+(?:now\s+or\s+in\s+the\s+future\s+)?(?:require|need|requiring|needing)\b.{0,80}\bsponsor|\b(?:independent|free)\s+of\b.{0,50}\bsponsor/i;
+    /\bwithout\b.{0,120}\b(?:sponsor|visa\s+(?:support|assistance))|\b(?:not|no|never)\s+(?:now\s+or\s+in\s+the\s+future\s+)?(?:require|need|requiring|needing)\b.{0,100}\b(?:sponsor|visa\s+(?:support|assistance))|\b(?:independent|free)\s+of\b.{0,70}\b(?:sponsor|visa\s+(?:support|assistance))/i;
 
   /**
    * The voluntary self-identification block — CC-305 and its equivalents.
@@ -515,7 +521,38 @@
   const denyOwn = (re) => (label) => re.test(ownLabel(label));
 
   const SELF_ID_RE =
-    /(voluntary\s+self[-\s]?identification|self[-\s]?identification\s+of\s+disability|form\s*cc-?305|cc-?305|section\s*503|omb\s*control\s*number\s*1250|voluntary\s+disclosure)/i;
+    /(voluntary\s+self[-\s]?identification|self[-\s]?identification\s+(?:of\s+)?disabilit|disabilit(?:y|ies)\s+self[-\s]?identification|form\s*cc-?305|cc-?305|section\s*503|omb\s*control\s*number\s*1250|voluntary\s+disclosures?|disability\s+disclosure)/i;
+
+  /**
+   * Workday often leaves the disclosure heading out of the input's accessible
+   * name. Inspect the nearest small section too, without ever treating the
+   * entire application as a disclosure block and changing an unrelated date.
+   */
+  const inSelfIdSection = (el) => {
+    let node = el;
+    for (let depth = 0; node && depth < 9; depth++, node = node.parentElement) {
+      if (typeof document !== "undefined" &&
+          (node === document.body || node === document.documentElement)) break;
+      const attrs = ["aria-label", "data-automation-id", "id", "class"]
+        .map((name) => node.getAttribute?.(name) || "").join(" ");
+      if (SELF_ID_RE.test(attrs)) return true;
+      let heading = "";
+      try {
+        heading = node.querySelector?.("legend, h1, h2, h3, h4, [role='heading'], [data-automation-id*='title' i]")?.textContent || "";
+      } catch {}
+      if (SELF_ID_RE.test(heading)) return true;
+      let controls = 99;
+      try {
+        controls = node.querySelectorAll?.("input, select, textarea, [role='combobox'], [role='radio'], [role='checkbox']")?.length ?? 99;
+      } catch {}
+      const text = String(node.textContent || "").replace(/\s+/g, " ").trim();
+      if (controls <= 15 && text.length <= 5000 && SELF_ID_RE.test(text)) return true;
+      if (node.tagName === "FORM") break;
+    }
+    return false;
+  };
+  const selfIdRequirement = (label, el) =>
+    SELF_ID_RE.test(String(label ?? "")) || inSelfIdSection(el);
 
   const RULES = [
     /* ---------------- Voluntary self-identification (CC-305) ----------------
@@ -533,7 +570,7 @@
       key: "selfIdName",
       // Above fullName (6) and signature (8) so the section-aware rule wins.
       weight: 19,
-      require: SELF_ID_RE,
+      require: selfIdRequirement,
       match: [/^name$/i, /\byour\s*name\b/i, /\b(full|legal)\s*name\b/i, /\bname\b/i],
       deny: [
         THIRD_PARTY,
@@ -554,15 +591,16 @@
        */
       key: "selfIdDate",
       weight: 19,
-      require: SELF_ID_RE,
-      match: [/^date$/i, /\bdate\b/i, /^(month|day|year|mm|dd|yyyy)(?:\b|$)/i],
+      require: selfIdRequirement,
+      match: [/^date$/i, /\bdate\b/i, /^(month|day|year|mm|dd|yyyy)(?:\b|$)/i,
+        /^(?:mm|dd|yyyy)(?:\s*[-/.]\s*(?:mm|dd|yyyy)){1,2}$/i],
       matchOwn: true,
       deny: [denyOwn(THIRD_PARTY), denyOwn(/\b(start|end|from|to|birth|dob|graduation|grad|hire|termination|expiry|expiration|issued|available|availability|joining|last\s*working)\b/i),
         /\b(?:birth|dob|graduation|hire|termination|expiry|expiration)\b|\b(?:start|end|from|to)\s+(?:date|month|year|day)\b/i],
       identity: true,
-      type: ["text", "date", "select"],
+      type: ["text", "date", "select", "number"],
       options: MONTH_SYNONYMS,
-      value: (p, el) => todayFor(el),
+      value: (p, el) => todayFor(el, "-"),
     },
     {
       /**
@@ -922,6 +960,8 @@
       deny: [THIRD_PARTY, /united\s*states\b.*country|veteran|marital|employment\s*status/i,
              denyOwn(/\bcounty\b/i)],
       type: ["text", "select"],
+      profileOnly: true,
+      profileFirst: true,
       value: (p) => P(p).state,
     },
     {
@@ -1338,7 +1378,10 @@
     {
       key: "authorizedToWork", weight: 12, profileOnly: true, eligibility: true, matchOwn: true,
       match: [/\b(?:authori[sz]|eligib)\w*\b.{0,45}\bwork\b/i, /\bwork\s*authori[sz]\w*\b/i,
-        /\blegally\s*(entitled|permitted|allowed)\s*to\s*work\b/i, /\bright\s*to\s*work\b/i],
+        /\blegally\s*(entitled|permitted|allowed)\s*to\s*work\b/i, /\bright\s*to\s*work\b/i,
+        /\b(?:permission|permit|eligibility|authorization|authorisation)\b.{0,45}\b(?:to\s+)?work\b/i,
+        /\b(?:legally|lawfully)\b.{0,45}\b(?:work|employment)\b/i,
+        /\b(?:authori[sz]ed|eligible)\s+for\s+(?:work|employment)\b/i],
       deny: [denyOwn(/sponsor|\b(?:type|status|document|proof|explain|describe|which|what kind)\b/i)],
       type: ["select", "radio", "text", "checkbox"],
       value: (p, el, label) => {
@@ -1354,6 +1397,7 @@
       key: "requireSponsorship", weight: 13, profileOnly: true, eligibility: true, matchOwn: true,
       match: [/\b(?:require|need|seek)\w*\b.{0,120}\bsponsor/i,
         /\bsponsorship\b.*\b(?:now|future|required|needed)\b/i,
+        /\b(?:immigration|visa)\s+(?:support|assistance)\b/i,
         SPONSORSHIP_INVERTED, /^(?:(?:visa|employment|work)\s+)?sponsorship(?:\s+(?:required|needed))?\s*[?*]?$/i],
       deny: [denyOwn(/\b(?:tuition|scholarship|funding|financial|conference|research|education)\b/i)],
       type: ["select", "radio", "text", "checkbox"],
@@ -1507,7 +1551,7 @@
         THIRD_PARTY,
         /\b(start|end|from|to|birth|dob|graduation|grad|hire|termination|expiry|expiration|issued|available|availability|joining|last\s*working)\b/i,
       ],
-      type: ["text", "date"],
+      type: ["text", "date", "number"],
       value: (p, el) => todayFor(el),
     },
     {
@@ -1515,7 +1559,9 @@
       profileOnly: true,
       matchOwn: true,
       weight: 11,
-      match: [/\bhow\s*(?:did|do|have)\s*(?:you|u)\s*(hear|find|learn)\b/i, /\bsource\s*of\s*(referral|application)\b/i, /\bwhere\s*did\s*you\s*(hear|find)\b/i, /^(?:source|source category|source type|source detail|source details|referral source|recruiting source)$/i],
+      match: [/\bhow\s*(?:did|do|have)\s*(?:you|u)\s*(hear|find|learn)\b/i, /\bsource\s*of\s*(referral|application)\b/i, /\bwhere\s*did\s*you\s*(hear|find)\b/i,
+        /^(?:source|source category|source type|source detail|source details|source sub[- ]?category|referral source|recruiting source)$/i,
+        /^(?:please\s+)?(?:specify|select)\s+(?:the\s+)?(?:source|source detail|source sub[- ]?category)$/i],
       type: ["select", "text", "radio"],
       value: () => "LinkedIn",   // Always use LinkedIn as the canonical source answer.
       // The matcher resolves that canonical answer against native selects,
@@ -1528,8 +1574,8 @@
         // Ordered most specific first. "Job board" used to outrank "social
         // media" and "professional network", so a list offering LinkedIn only
         // under one of those was answered with the wrong category.
-        LinkedIn: ["linkedin", "linked in", "social media", "social network", "job board", "job boards", "job site"],
-        Indeed: ["indeed", "job board", "job boards", "online", "internet", "job site"],
+        LinkedIn: ["linkedin", "linked in", "social media", "social network", "job portal", "job portals", "job board", "job boards", "job site", "other"],
+        Indeed: ["indeed", "job portal", "job portals", "job board", "job boards", "online", "internet", "job site"],
         Glassdoor: ["glassdoor", "job board", "job boards", "online"],
         Monster: ["monster", "job board", "job boards", "online"],
         Dice: ["dice", "job board", "job boards", "online"],

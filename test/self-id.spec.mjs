@@ -94,7 +94,7 @@ const plan = (label, control = el()) => {
 
 const d = new Date();
 const pad = (n) => String(n).padStart(2, "0");
-const TODAY_US = `${pad(d.getMonth() + 1)}/${pad(d.getDate())}/${d.getFullYear()}`;
+const TODAY_SELF_ID = `${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${d.getFullYear()}`;
 const TODAY_ISO = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 
 console.log("\nCC-305 block");
@@ -103,7 +103,7 @@ check("Name is the applicant's legal name", plan(`Name | ${SEC}`).value, "Subhas
 check("Employee ID matches its own rule", plan(`Employee ID (if applicable) | ${SEC}`).key, "employeeId");
 check("Employee ID is left blank", plan(`Employee ID (if applicable) | ${SEC}`).blank, true);
 check("Date matches the self-ID date rule", plan(`Date | ${SEC}`).key, "selfIdDate");
-check("Date is today, MM/DD/YYYY", plan(`Date | ${SEC}`).value, TODAY_US);
+check("Date is today, MM-DD-YYYY", plan(`Date | ${SEC}`).value, TODAY_SELF_ID);
 check("Date is ISO for a native date input", plan(`Date | ${SEC}`, el("date")).value, TODAY_ISO);
 
 console.log("\nthe same labels elsewhere are unaffected");

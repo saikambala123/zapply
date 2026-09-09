@@ -90,19 +90,20 @@ export function boot() {
   doc.getElementById = (id) => doc.querySelectorAll('*').find((n) => n.id === id) || null;
   doc.createElement = (tag) => new FixtureNode(tag);
   doc.execCommand = () => false;
+  const sentMessages = [];
   const context = { document: doc, console, setTimeout, clearTimeout, setInterval: (...args) => { const timer = setInterval(...args); timer.unref(); return timer; }, clearInterval, URL,
     performance, location: { hostname: 'fixture.test', pathname: '/apply', href: 'https://fixture.test/apply', search: '' },
     Event: FixtureEvent, KeyboardEvent: FixtureEvent, MouseEvent: FixtureEvent, FocusEvent: FixtureEvent, CustomEvent: FixtureEvent,
     Node: { DOCUMENT_POSITION_FOLLOWING: 4 }, CSS: { escape: (x) => x },
     HTMLInputElement: class {}, HTMLSelectElement: class {}, HTMLTextAreaElement: class {},
     getComputedStyle: (n) => ({ display: n.hidden ? 'none' : 'block', visibility: 'visible', opacity: '1' }),
-    chrome: { runtime: { onMessage: { addListener() {} }, sendMessage(msg, cb) { cb?.({ ok: false }); } } },
+    chrome: { runtime: { onMessage: { addListener() {} }, sendMessage(msg, cb) { sentMessages.push(msg); cb?.({ ok: false }); } } },
     __ZAPPLY_TEST: true, innerHeight: 1000, innerWidth: 1400, addEventListener() {} };
   context.window = context; context.top = context; context.globalThis = context;
   vm.createContext(context);
   for (const file of ['lib/field-map.js', 'lib/matcher.js', 'lib/ats.js', 'content/autofill.js'])
     vm.runInContext(readFileSync(new URL('../../extension/' + file, import.meta.url), 'utf8'), context);
-  return { context, doc, M: context.ZAPPLY_MATCHER, rules: context.ZAPPLY_FIELD_MAP, app: context.__zapply };
+  return { context, doc, M: context.ZAPPLY_MATCHER, rules: context.ZAPPLY_FIELD_MAP, app: context.__zapply, sentMessages };
 }
 export function select(doc, labels, attrs = {}) {
   const el = doc.body.appendChild(new FixtureNode('select', attrs));

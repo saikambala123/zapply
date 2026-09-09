@@ -26,6 +26,13 @@ await test('CC-305 date formats and split fields use the current local date', ()
   assert.equal(months.value, String(now.getMonth()+1));
   const dob = field(b, 'Month | Date of Birth | Voluntary Self-Identification of Disability', new N('input'));
   assert.notEqual(dob.rule?.key, 'selfIdDate');
+
+  const disclosure = b.doc.body.appendChild(new N('section', {'data-automation-id':'voluntaryDisclosures'}));
+  disclosure.append(new N('h2', {}, 'Voluntary Disclosures - Disability Self Identification'));
+  const bare = disclosure.appendChild(new N('input', {'aria-label':'Date'}));
+  const bareField = field(b, 'Date', bare);
+  assert.equal(bareField.rule?.key, 'selfIdDate', 'nearest Workday disclosure container must be recognized');
+  assert.equal(plan(b, bareField).value, `${mm}-${dd}-${yyyy}`, 'bare CC-305 date defaults to MM-DD-YYYY');
 });
 
 await test('authorization spelling, booleans, polarity, and exact saved questions', () => {
@@ -35,6 +42,10 @@ await test('authorization spelling, booleans, polarity, and exact saved question
     ['Are you NOT authorized to work?', 'No'],
     ['Are you able to work without employer sponsorship?', 'Yes'],
     ['Will you now or in the future require visa sponsorship?', 'No'],
+    ['Do you have legal permission to work in this country?', 'Yes'],
+    ['Are you lawfully eligible for employment?', 'Yes'],
+    ['Will you require immigration assistance?', 'No'],
+    ['Can you maintain work authorization without visa sponsorship?', 'Yes'],
     ['Do you NOT require sponsorship?', 'Yes'],
     ['Are you legally authorized to work? | Will you require sponsorship?', 'Yes'],
   ];
@@ -62,12 +73,32 @@ await test('native choices reject opposite polarity, disabled options and unavai
   const b=boot(); const auth=b.rules.find(r=>r.key==='authorizedToWork');
   const el=select(b.doc,['Select','Not authorized','Authorized']);
   assert.equal(b.M.setSelectValue(el,'Yes',auth.options,'Work authorization'),true); assert.equal(el.value,'Authorized');
-  for (const [choices,want] of [[['Referral','Company Website'], ''], [['Job Board','Social Media'], 'Social Media'], [['Job Board','LinkedIn','Social Media'],'LinkedIn']]) {
+  for (const [choices,want] of [
+    [['Referral','Company Website'], ''],
+    [['Referral','Other'], 'Other'],
+    [['Job Portal','Other'], 'Job Portal'],
+    [['Job Board','Social Media','Other'], 'Social Media'],
+    [['Job Board','LinkedIn','Social Media','Other'],'LinkedIn'],
+  ]) {
     const source=select(b.doc,['Select',...choices]);
     b.M.setSelectValue(source,'LinkedIn',{},'How did you hear about us?'); assert.equal(source.value,want);
   }
   const disabled=select(b.doc,['Select','LinkedIn','Job Boards']); disabled.options[1].disabled=true;
   b.M.setSelectValue(disabled,'LinkedIn',{},'Source'); assert.equal(disabled.value,'Job Boards');
+});
+
+await test('state always comes from profile and resolves full names, abbreviations and ISO codes', () => {
+  const b=boot();
+  const stateField=field(b,'State / Province',select(b.doc,['Select','TX','IL'],{'aria-label':'State / Province'}));
+  const planned=plan(b,stateField,{personal:{state:'Illinois'}},[{question:'State / Province',answer:'Texas'}]);
+  assert.equal(planned.value,'Illinois'); assert.equal(planned.source,'profile');
+  assert.equal(b.M.setSelectValue(stateField.el,planned.value,stateField.rule.options,stateField.label),true);
+  assert.equal(stateField.el.value,'IL');
+  for (const [stored,option] of [['Karnataka','IN-KA'],['Ontario','ON'],['California','US-CA']]) {
+    const el=select(b.doc,['Select',option],{'aria-label':'State'});
+    assert.equal(b.M.setSelectValue(el,stored,{},'State'),true,`${stored} -> ${option}`);
+    assert.equal(el.value,option);
+  }
 });
 
 await test('school uses the correct profile row and falls back only when the profile is blank', () => {
@@ -97,14 +128,16 @@ await test('consent statements stay separate in one fieldset and use actual Yes/
   assert.equal(b.M.setSelectValue(radio,'Yes',r.options,'I agree'),true); assert.equal(radio.value,'I agree');
 });
 
-function sourceMenu(b, tree) {
+function sourceMenu(b, tree, {plainWorkdayPrompts=false}={}) {
   const el=b.doc.body.appendChild(new N('button',{'aria-haspopup':'listbox','aria-controls':'source-menu','aria-label':'How did you hear about us?'},'Select'));
   const menu=b.doc.body.appendChild(new N('div',{role:'listbox',id:'source-menu'}));
   let selected='';
   const render=(branch)=>{
     menu.replaceChildren();
     for(const [label,children] of Object.entries(branch)) {
-      const option=new N('div',{role:'option',...(children ? {'data-automation-id':'promptExpandableNode','aria-expanded':'false'} : {})},label);
+      const option=new N('div',{role:'option',...(plainWorkdayPrompts
+        ? {'data-automation-id':'promptOption'}
+        : (children ? {'data-automation-id':'promptExpandableNode','aria-expanded':'false'} : {}))},label);
       option.addEventListener('click',()=>{if(children)render(children);else{selected=label;el.textContent=label;el.setAttribute('aria-expanded','false');menu.replaceChildren();}});
       menu.append(option);
     }
@@ -118,12 +151,46 @@ await test('custom sources search multiple parents and three levels before falli
     [{'Social Media':{Facebook:null},'Job Boards':{Professional:{LinkedIn:null}},Referral:null},'LinkedIn'],
     [{'Social Media':null,'Job Board':{LinkedIn:null}},'LinkedIn'],
     [{'Social Media':null,'Job Board':null},'Social Media'],
-    [{Referral:{Friends:null},Website:null},''],
+    [{Referral:{Friends:null},Website:null,Other:null},'Other'],
   ]){
     const b=boot();const f=sourceMenu(b,tree); b.M.beginFillSession();
     const ok=await b.M.setComboboxValue(f.el,'LinkedIn',100,{},'How did you hear about us?');
     assert.equal(f.selected(),want); assert.equal(ok,Boolean(want));assert.equal(f.menu.children.length,0);
   }
+});
+
+await test('Workday promptOption categories are drilled even without aria-expanded',async()=>{
+  const b=boot(); const f=sourceMenu(b,{
+    'Social Media':{Facebook:null},
+    'Job Portal':{'Professional Network':{LinkedIn:null}},
+    Other:null,
+  },{plainWorkdayPrompts:true});
+  b.M.beginFillSession();
+  assert.equal(await b.M.setComboboxValue(f.el,'LinkedIn',100,{},'How did you hear about us?'),true);
+  assert.equal(f.selected(),'LinkedIn'); assert.equal(f.menu.children.length,0);
+});
+
+await test('extension and AI writes stay out of Pending until the applicant edits them',async()=>{
+  const b=boot(); b.app.state.runId=1; b.app.state.adapter={key:'workday',quirks:{}};
+  b.app.state.session={responses:[]};
+  const source=select(b.doc,['Select','Social Media','Other'],{'aria-label':'How did you hear about us?'});
+  const sf=field(b,'How did you hear about us?',source);
+  b.app.state.allFields=[sf];
+  assert.equal(await b.app.applyValue(sf,'LinkedIn',sf.rule),true);
+  assert.equal(source.value,'Social Media');
+  assert.equal(source.__zapplyWrittenValue,'Social Media','provenance must record the committed fallback');
+  b.app.queueAnswersFromForm();
+  assert.equal(b.sentMessages.some(m=>m.type==='ZAPPLY_HOLD_ANSWERS'),false,'extension fill must not be Pending');
+
+  source.value='Other'; source.__zapplyUserEdited=true;
+  assert.equal(b.app.recordAnswer(sf,{userDriven:true}),true);
+  assert.equal(b.sentMessages.some(m=>m.type==='ZAPPLY_HOLD_ANSWERS'&&m.items?.[0]?.answer==='Other'),true);
+
+  const ai=b.doc.body.appendChild(new N('textarea',{'aria-label':'Why are you interested?'}));
+  const af=field(b,'Why are you interested?',ai); b.app.state.runId++;
+  assert.equal(await b.app.applyValue(af,'AI draft answer',null),true);
+  b.app.state.drafted.add(ai); ai.value='Applicant edited answer'; ai.__zapplyUserEdited=true;
+  assert.equal(b.app.recordAnswer(af,{userDriven:true}),true,'edited AI answer must be Pending');
 });
 
 await test('searchable source menus wait for LinkedIn and do not let saved sources override it',async()=>{

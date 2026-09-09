@@ -530,7 +530,15 @@
       // "a bare Date, but only inside a Voluntary Self-Identification block" —
       // a condition no single pattern in `match` can express, because those are
       // OR'd against each description separately.
-      if (rule.require && !rule.require.test(label)) continue;
+      if (rule.require) {
+        let required = false;
+        try {
+          required = typeof rule.require === "function"
+            ? Boolean(rule.require(label, el))
+            : Boolean(rule.require.test(label));
+        } catch {}
+        if (!required) continue;
+      }
 
       /**
        * Where the match landed decides how much it counts.
@@ -1476,14 +1484,77 @@
   function sourceChoiceScore(text) {
     const t = norm(text).replace(/[›»>❯]+/g, "").trim();
     if (/\blinked\s*in\b/i.test(t)) return 150;
-    if (/^(?:social media|social networks?)(?:\s*\([^)]*\))?$/.test(t)) return 100;
-    if (/^(?:job boards?|job sites?)(?:\s*\([^)]*\))?$/.test(t)) return 90;
+    if (/^(?:social media|social networks?|professional social networks?)(?:\s*\([^)]*\))?$/.test(t)) return 110;
+    if (/^(?:online\s+)?(?:job boards?|job sites?|job portals?|career portals?)(?:\s*\([^)]*\))?$/.test(t)) return 100;
+    if (/^(?:other|others|other source|other option)(?:\s*[-:(].*)?$/.test(t)) return 80;
     return 0;
   }
   const isLinkedIn = (value) => /^linked\s*in$/i.test(String(value ?? "").trim());
   const isSchool = (hint) => /\b(school|university|college|institution)\b/i.test(String(hint ?? "").split("|")[0]) &&
     !/degree|major|field of study|location|date|year|month|gpa/i.test(String(hint ?? "").split("|")[0]);
   const schoolText = (text) => norm(text).normalize("NFKC").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+
+  /**
+   * State/province pickers commonly disagree with the profile only in shape:
+   * "Illinois", "IL", "US-IL" and "IL - Illinois" are the same answer. Keep
+   * those aliases inside the matcher so the profile remains the authority and
+   * no ATS-specific option id ever leaks into Saved Answers.
+   */
+  const REGION_ROWS = [
+    "US|AL|Alabama", "US|AK|Alaska", "US|AZ|Arizona", "US|AR|Arkansas", "US|CA|California",
+    "US|CO|Colorado", "US|CT|Connecticut", "US|DE|Delaware", "US|FL|Florida", "US|GA|Georgia",
+    "US|HI|Hawaii", "US|ID|Idaho", "US|IL|Illinois", "US|IN|Indiana", "US|IA|Iowa",
+    "US|KS|Kansas", "US|KY|Kentucky", "US|LA|Louisiana", "US|ME|Maine", "US|MD|Maryland",
+    "US|MA|Massachusetts", "US|MI|Michigan", "US|MN|Minnesota", "US|MS|Mississippi", "US|MO|Missouri",
+    "US|MT|Montana", "US|NE|Nebraska", "US|NV|Nevada", "US|NH|New Hampshire", "US|NJ|New Jersey",
+    "US|NM|New Mexico", "US|NY|New York", "US|NC|North Carolina", "US|ND|North Dakota", "US|OH|Ohio",
+    "US|OK|Oklahoma", "US|OR|Oregon", "US|PA|Pennsylvania", "US|RI|Rhode Island", "US|SC|South Carolina",
+    "US|SD|South Dakota", "US|TN|Tennessee", "US|TX|Texas", "US|UT|Utah", "US|VT|Vermont",
+    "US|VA|Virginia", "US|WA|Washington", "US|WV|West Virginia", "US|WI|Wisconsin", "US|WY|Wyoming",
+    "US|DC|District of Columbia", "US|PR|Puerto Rico",
+    "CA|AB|Alberta", "CA|BC|British Columbia", "CA|MB|Manitoba", "CA|NB|New Brunswick",
+    "CA|NL|Newfoundland and Labrador", "CA|NS|Nova Scotia", "CA|NT|Northwest Territories", "CA|NU|Nunavut",
+    "CA|ON|Ontario", "CA|PE|Prince Edward Island", "CA|QC|Quebec", "CA|SK|Saskatchewan", "CA|YT|Yukon",
+    "IN|AP|Andhra Pradesh", "IN|AR|Arunachal Pradesh", "IN|AS|Assam", "IN|BR|Bihar",
+    "IN|CG|Chhattisgarh", "IN|GA|Goa", "IN|GJ|Gujarat", "IN|HR|Haryana", "IN|HP|Himachal Pradesh",
+    "IN|JH|Jharkhand", "IN|KA|Karnataka", "IN|KL|Kerala", "IN|MP|Madhya Pradesh", "IN|MH|Maharashtra",
+    "IN|MN|Manipur", "IN|ML|Meghalaya", "IN|MZ|Mizoram", "IN|NL|Nagaland", "IN|OD|Odisha",
+    "IN|PB|Punjab", "IN|RJ|Rajasthan", "IN|SK|Sikkim", "IN|TN|Tamil Nadu", "IN|TS|Telangana",
+    "IN|TR|Tripura", "IN|UP|Uttar Pradesh", "IN|UT|Uttarakhand", "IN|WB|West Bengal", "IN|DL|Delhi",
+    "IN|JK|Jammu and Kashmir", "IN|LA|Ladakh", "IN|CH|Chandigarh", "IN|PY|Puducherry",
+  ];
+
+  const REGION_INDEX = (() => {
+    const map = new Map();
+    for (const row of REGION_ROWS) {
+      const [country, code, name] = row.split("|");
+      const values = [code, name, `${country}-${code}`, `${code} - ${name}`, `${name} (${code})`];
+      for (const key of [code, name, `${country}-${code}`]) {
+        const normalized = normalizeChoiceText(key);
+        const current = map.get(normalized) || [];
+        map.set(normalized, [...new Set([...current, ...values])]);
+      }
+    }
+    return map;
+  })();
+
+  function isRegionField(hint) {
+    const own = String(hint ?? "").split("|")[0];
+    return /\b(state|province|region|territory)\b/i.test(own) &&
+      !/\b(status|employment|veteran|marital|united states.*country)\b/i.test(own);
+  }
+
+  function regionAliases(value, hint) {
+    if (!isRegionField(hint)) return [];
+    const raw = String(value ?? "").trim();
+    if (!raw) return [];
+    const key = normalizeChoiceText(raw);
+    const direct = REGION_INDEX.get(key) || [];
+    // Profiles occasionally store an ISO-like prefix with a space or slash.
+    const tail = key.match(/^(?:us|ca|in)\s+([a-z]{2})$/)?.[1];
+    const byTail = tail ? REGION_INDEX.get(tail) || [] : [];
+    return [...new Set([raw, ...direct, ...byTail])];
+  }
 
   function setSelectValue(el, value, synonyms, hint) {
     if (value === undefined || value === null || String(value).trim() === "") return false;
@@ -1492,7 +1563,8 @@
 
     const want = normalizeChoiceText(value);
     const rawWant = norm(value);
-    const accepted = synonymsFor(synonyms, value).map(normalizeChoiceText).filter(Boolean);
+    const accepted = [...synonymsFor(synonyms, value), ...regionAliases(value, hint)]
+      .map(normalizeChoiceText).filter(Boolean);
     const primary = [want, rawWant].filter(Boolean);
     const wantId = eeoId(value, hint);
 
@@ -2348,8 +2420,8 @@
   /* ---------------- nested menus ---------------- */
 
   const CATEGORY_HINTS = [
-    [/linkedin/i, ["social media", "job board", "online", "internet", "website", "professional network"]],
-    [/indeed|glassdoor|monster|dice|ziprecruiter|naukri|seek/i, ["job board", "online", "internet", "job site"]],
+    [/linkedin/i, ["social media", "social network", "job portal", "job board", "job site", "professional network", "online"]],
+    [/indeed|glassdoor|monster|dice|ziprecruiter|naukri|seek/i, ["job portal", "job board", "online", "internet", "job site"]],
     [/referr?al|employee|friend|colleague/i, ["referral", "employee referral", "word of mouth", "personal"]],
     [/company\s*(web)?site|our\s*web\s*site|careers?\s*(page|site)/i, ["our web site", "company website", "website", "online"]],
     [/recruiter|agency|head\s*hunter/i, ["recruiter", "agency", "direct sourcing", "search firm"]],
@@ -2370,12 +2442,22 @@
   function isParentOption(option) {
     if (!option) return false;
     if (/^(true|menu|listbox|tree)$/.test(option.getAttribute("aria-haspopup") || "")) return true;
-    if (option.getAttribute("data-automation-id") === "promptExpandableNode") return true;
+    if (/prompt.*(?:expand|parent|category|folder|node)/i.test(option.getAttribute("data-automation-id") || "")) return true;
     if (option.getAttribute("aria-expanded") !== null) return true;
     if (/submenu|has-children|expandable|parent/i.test(option.className || "")) return true;
     if (option.querySelector('[class*="chevron"], [class*="arrow"], [class*="caret"], svg[data-icon*="chevron" i], svg[aria-label*="expand" i]')) return true;
     if (/[›»>❯]\s*$/.test(clean(option.textContent))) return true;
     return false;
+  }
+
+  function isSourceBranchCandidate(option) {
+    if (isParentOption(option)) return true;
+    if (!/promptOption/i.test(option?.getAttribute?.("data-automation-id") || "")) return false;
+    const score = sourceChoiceScore(option.textContent || option.getAttribute?.("aria-label") || "");
+    // `promptOption` does not reveal whether the row is a leaf. Probe every
+    // non-LinkedIn row under the bounded traversal budget; an actual leaf just
+    // closes the menu and is reopened, while a parent reveals the next level.
+    return score < 150;
   }
 
   function optionScoreForTarget(option, targets, hint, primaryCount) {
@@ -2470,7 +2552,15 @@
   // than trying to click detached nodes from the first menu.
   async function findLinkedInOption(session, initial, waitMs) {
     const textOf = (o) => clean(o.textContent || o.getAttribute("aria-label") || "");
-    const snapshot = (list) => list.map((o) => ({ text: textOf(o), parent: isParentOption(o) }));
+    // Some Workday tenants mark both leaves and category rows only as
+    // `promptOption`. A source-category row is safe to probe: if it is a leaf
+    // the menu closes and can be reopened; if it is a parent its children are
+    // now available. This keeps LinkedIn reachable without treating every
+    // ordinary list option as a tree node.
+    const canBranch = (o) => isSourceBranchCandidate(o);
+    const snapshot = (list) => list.map((o) => ({
+      text: textOf(o), parent: isParentOption(o), branch: canBranch(o),
+    }));
     let budget = 30;
     const fallbacks = [];
     const resetTo = async (path) => {
@@ -2479,7 +2569,7 @@
       session.baseline = opened.baseline;
       let list = opened.options;
       for (const text of path) {
-        const node = list.find((o) => textOf(o) === text && isParentOption(o));
+        const node = list.find((o) => textOf(o) === text && canBranch(o));
         if (!node) return [];
         node.click?.();
         list = await changedOptions(session, list, waitMs);
@@ -2494,14 +2584,14 @@
           fallbacks.push({ path: [...path], text: item.text, score: sourceChoiceScore(item.text) });
       }
       if (path.length >= 5) return null;
-      const parents = snapshot(list).filter((o) => o.parent)
+      const parents = snapshot(list).filter((o) => o.branch)
         .sort((a, b) => sourceChoiceScore(b.text) - sourceChoiceScore(a.text));
       let first = true;
       for (const parent of parents) {
         if (--budget < 0) break;
         if (!first) list = await resetTo(path);
         first = false;
-        const node = list.find((o) => textOf(o) === parent.text && isParentOption(o));
+        const node = list.find((o) => textOf(o) === parent.text && canBranch(o));
         if (!node) continue;
         node.click?.();
         const children = await changedOptions(session, list, waitMs);
@@ -2558,6 +2648,9 @@
     if (backing && backing !== el) {
       if (setSelectValue(backing, value, synonyms, hint)) {
         await wait(90);
+        try {
+          el.__zapplyCommittedValue = clean(backing.options?.[backing.selectedIndex]?.textContent || backing.value || "");
+        } catch {}
         el.__zapplyNoMatch = false;
         return true;
       }
@@ -2571,7 +2664,7 @@
     session.baseline = opened.baseline;
     let options = opened.options;
 
-    const accepted = synonymsFor(synonyms, value);
+    const accepted = [...synonymsFor(synonyms, value), ...regionAliases(value, hint)];
     const targets = [String(value), want, ...accepted].filter(Boolean);
     const primaryCount = [String(value), want].filter(Boolean).length;
 
@@ -2607,7 +2700,7 @@
         }
       }
     }
-    if (isLinkedIn(value) && options.some(isParentOption) && (bestScore < 150 || isParentOption(best))) {
+    if (isLinkedIn(value) && options.some(isSourceBranchCandidate) && (bestScore < 150 || isParentOption(best))) {
       best = await findLinkedInOption(session, options, waitMs);
       bestScore = best ? sourceChoiceScore(best.textContent) : 0;
       options = menuOptions(session);
@@ -2631,6 +2724,7 @@
           if (isSchool(hint)) {
             const committed = renderedChoiceText(el) || el.getAttribute("aria-valuetext") || el.getAttribute("data-value");
             if (committed && schoolText(committed) === schoolText(value)) {
+              el.__zapplyCommittedValue = clean(committed);
               el.__zapplySearchPending = false;
               await closeOpenMenu();
               return true;
@@ -2676,6 +2770,8 @@
       return false;
     }
     el.__zapplyNoMatch = false;
+
+    const bestLabel = clean(best.textContent || best.getAttribute("aria-label") || best.getAttribute("data-value") || "");
 
     try { best.scrollIntoView?.({ block: "nearest" }); } catch {}
     try { fire(best, "pointerdown", "mousedown", "pointerup", "mouseup"); } catch {}
@@ -2728,7 +2824,10 @@
       await closeOpenMenu();
       return false;
     }
-    if (acceptedSelection) el.__zapplySearchPending = false;
+    if (acceptedSelection) {
+      el.__zapplyCommittedValue = bestLabel;
+      el.__zapplySearchPending = false;
+    }
     return acceptedSelection;
   }
 

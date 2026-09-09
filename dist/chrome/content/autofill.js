@@ -1217,7 +1217,7 @@
    * offered back as a new unsaved answer. Every fill re-queued everything it
    * had filled.
    */
-  const PROGRAMMATIC_LEDGER_TTL = 15_000;
+  const PROGRAMMATIC_LEDGER_TTL = 120_000;
 
   function provenanceKey(field, answer) {
     let question = "";
@@ -1255,6 +1255,16 @@
   function clearProgrammaticAnswer(field, answer) {
     const key = provenanceKey(field, answer);
     if (key) state.programmaticAnswers.delete(key);
+  }
+
+  function clearProgrammaticQuestion(field) {
+    let question = "";
+    try { question = primaryQuestion(field); } catch {}
+    const prefix = `${answerKey(question || field?.label || field?.el?.name || field?.el?.id || "")}::`;
+    if (prefix === "::") return;
+    for (const key of state.programmaticAnswers.keys()) {
+      if (key.startsWith(prefix)) state.programmaticAnswers.delete(key);
+    }
   }
 
   function eachInGroup(el, fn) {
@@ -1435,9 +1445,10 @@
       // though they had answered it by hand. Recorded on every member of a
       // choice group, because the option actually clicked is rarely the element
       // the field is anchored to.
-      const written = typeof value === "object" ? null : String(value);
       let settled = "";
       try { settled = String(readValue(field) ?? "").trim(); } catch {}
+      if (!settled) settled = String(el.__zapplyCommittedValue ?? "").trim();
+      const written = settled || (typeof value === "object" ? null : String(value));
       eachInGroup(el, (member) => {
         member.__zapplyWrittenValue = written;
         // The sweep compares against this to decide whether a value changed. A
@@ -1451,7 +1462,11 @@
       // DOM nodes are disposable on modern ATS pages. Keep provenance by
       // question+answer as well, so a trusted trailing event on a freshly
       // rendered node cannot turn our own fill into a pending manual answer.
-      rememberProgrammaticAnswer(field, value);
+      // Record what the ATS committed, not only what was requested. A source
+      // menu may legitimately turn LinkedIn into its available fallback
+      // "Social Media"; storing LinkedIn here made the later sweep misclassify
+      // Social Media as a new manual answer.
+      rememberProgrammaticAnswer(field, written ?? value);
     }
 
     // Each setter self-verifies; verifyField is an independent second opinion.
@@ -1675,7 +1690,7 @@
    * These questions are answerable from the profile or not at all.
    */
   const SELF_ID_LABEL_RE =
-    /(voluntary\s+self[-\s]?identification|self[-\s]?identification\s+of\s+disability|form\s*cc-?305|cc-?305|section\s*503|omb\s*control\s*number\s*1250|voluntary\s+disclosure|equal\s+employment\s+opportunity|eeo)/i;
+    /(voluntary\s+self[-\s]?identification|self[-\s]?identification\s+(?:of\s+)?disabilit|disabilit(?:y|ies)\s+self[-\s]?identification|form\s*cc-?305|cc-?305|section\s*503|omb\s*control\s*number\s*1250|voluntary\s+disclosures?|disability\s+disclosure|equal\s+employment\s+opportunity|eeo)/i;
 
   function offLimitsToAi(field) {
     if (field.rule?.identity || field.rule?.eeo || field.rule?.blank || field.rule?.profileOnly || field.rule?.key === "school") return true;
@@ -3417,6 +3432,7 @@
       // The whole group, so choosing a different radio with the keyboard or the
       // mouse counts as taking over from the fill however the group is wired.
       releaseGroupToUser(field.el);
+      clearProgrammaticQuestion(field);
     };
     // Any of these can only come from a real person: the browser marks events
     // it synthesises for page scripts as untrusted. A trusted `input` is the
@@ -3431,8 +3447,8 @@
       field.el.addEventListener(type, releaseToUser, true)
     );
 
-    field.el.addEventListener("input", () => {
-      if (!isProgrammatic(field.el)) field.el.__zapplyUserEdited = true;
+    field.el.addEventListener("input", (event) => {
+      if (event?.isTrusted && !isGroupProgrammatic(field.el)) field.el.__zapplyUserEdited = true;
     }, true);
     field.el.addEventListener("blur", capture, true);
     field.el.addEventListener("change", capture);
@@ -4002,6 +4018,9 @@
   // Test hook. Only ever attached when a harness sets the flag before the
   // content script loads, so nothing is exposed to real pages.
   if (window.__ZAPPLY_TEST === true) {
-    window.__zapply = { run, collectFields, planField, state, M, RULES };
+    window.__zapply = {
+      run, collectFields, planField, state, M, RULES,
+      applyValue, captureOn, recordAnswer, queueAnswersFromForm, readValue,
+    };
   }
 })();
