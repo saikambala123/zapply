@@ -1,0 +1,360 @@
+Local validation of Zapply 1.13.11
+Fixtures use simulated DOM/events and mocked API responses; live browser/ATS and database integration are not verified.
+
+--- self-id ---
+
+CC-305 block
+  ok   Name matches the self-ID rule
+  ok   Name is the applicant's legal name
+  ok   Employee ID matches its own rule
+  ok   Employee ID is left blank
+  ok   Date matches the self-ID date rule
+  ok   Date is today, MM/DD/YYYY
+  ok   Date is ISO for a native date input
+
+the same labels elsewhere are unaffected
+  ok   a bare Name still resolves to fullName
+  ok   a bare Date is still left alone
+  ok   Graduation Date is not today
+  ok   Employment Start Date is not today
+
+identity fields are unreachable by the model
+  ok   First Name is flagged identity
+  ok   Email is flagged identity
+  ok   Please specify your gender. is flagged identity
+  ok   Please specify your veteran status. is flagged identity
+
+EEO canonicalisation
+  ok   classifications option
+  ok   veteran-but-not-protected is its own branch
+  ok   not-a-protected-veteran
+  ok   Asian (Not Hispanic or Latino)
+  ok   American Indian or Alaska Native (Not Hispanic or Latino)
+  ok   White (Not Hispanic or Latino)
+  ok   Black or African American (Not Hispanic or Latino)
+  ok   Native Hawaiian or Other Pacific Islander (Not Hispanic or Latino)
+  ok   Two or More Races (Not Hispanic or Latino)
+  ok   Hispanic or Latino
+  ok   'I do not want to answer' is a decline
+  ok   'I do not wish to answer' is a decline
+
+veteran dropdown
+  ok   a non-veteran gets the plain 'not' wording
+  ok   a decline gets the decline option
+  ok   a protected veteran gets the classifications option
+  ok   a non-protected veteran can still reach their wording
+  ok   a non-veteran refuses a list offering only the veteran wording
+
+race dropdown
+  ok   Asian does not land on American Indian
+  ok   Asian Indian lands on Asian
+  ok   Two or More Races is not read as Hispanic
+  ok   American Indian is still reachable
+
+gender dropdown
+  ok   Male resolves to Man
+  ok   Female resolves to Woman
+
+Oracle Recruiting contact section
+  ok   Address Line 1 takes the street
+  ok   Address Line 2 does not take the street
+  ok   Address Line 3 does not take the street
+  ok   Address Line 4 does not take the street
+  ok   Address Line 3 is left blank
+  ok   Address Line 4 is left blank
+  ok   Tax District is left blank
+  ok   Tax District is not the address
+  ok   Suffix has its own rule
+  ok   Suffix is empty without a profile value
+  ok   Title has its own rule
+  ok   Second Last Name is not the surname
+  ok   Second Last Name is left blank
+  ok   City still fills
+  ok   ZIP Code still fills
+  ok   Legal First Name still fills
+  ok   Legal Last Name still fills
+
+length caps
+  ok   a value past the field's maxlength is refused
+  ok   a value within the cap is written
+
+race vs Hispanic/Latino routing
+  ok   Workday race dropdown reaches the race rule
+  ok   a plain Race label reaches the race rule
+  ok   Ethnicity reaches the race rule
+  ok   the Hispanic yes/no question is left to its own rule
+  ok   ...even under an Ethnicity heading
+
+work eligibility
+  ok   eligibility rules are profile-only
+  ok   citizenship alone does not answer authorization in an unspecified country
+  ok   citizenship alone does not answer sponsorship
+  ok   status text does not replace an explicit authorization answer
+  ok   an explicit stored answer still wins
+  ok   nothing recorded stays blank
+  ok   inverted phrasing requires explicit facts
+  ok   inverted phrasing, needs sponsorship
+
+Workday contact block
+  ok   Phone Number -> phone
+  ok     ...and fills "(425) 444-0364"
+  ok   Country Phone Code -> phoneCountryCode
+  ok     ...and fills "+1"
+  ok   Email Address -> email
+  ok     ...and fills "a@b.com"
+  ok   Phone Extension -> phoneExtension
+  ok     ...and fills null
+
+a rule matching the field's own label beats one matching its neighbours
+  ok   First Name among its siblings
+  ok   Last Name among its siblings
+  ok   rules spanning two descriptions still work
+
+all passing
+
+
+--- workday-fields ---
+
+Workday MM / YYYY (the 'Invalid Date: /2019' field)
+  ok   write reports success
+  ok   month segment filled
+  ok   year segment filled
+  ok   works when handed the year segment
+  ok     and the year is right
+  ok   ISO input: month
+  ok   ISO input: year
+
+Workday spinbuttons with no maxlength (the shipped markup)
+  ok   write reports success
+  ok   month segment filled
+  ok   year segment filled
+  ok   works from the year segment too
+  ok     year correct
+
+Workday MM / DD / YYYY
+  ok   month
+  ok   day
+  ok   year
+
+keyboard activity is emitted (Workday marks the field touched)
+  ok   keydown fired on a segment
+  ok   change fired on a segment
+
+a plain text box is untouched by the segment path
+  ok   ordinary input still writes normally
+  ok     value is the whole string
+
+work-experience Location is profile-only
+  ok   experienceLocation is marked profileOnly
+  ok   educationLocation is marked profileOnly
+  ok   no profile location yields nothing to fill
+  ok   a profile location is still used
+
+required Location with nothing in the profile
+  ok   a required box gets the placeholder
+  ok   an optional box is still left empty
+  ok   a real location always wins
+
+phone extension
+  ok   phone extension is profile-only
+  ok   no extension in the profile means no value
+
+nothing may open the file chooser
+  ok   a file input is refused
+  ok   a label bound to one is refused
+  ok   an ordinary text input is fine
+
+text is typed through the editing pipeline
+  ok   a text box is written
+  ok     via the editing pipeline, not assignment
+  ok     and holds the value
+
+assignment still works when the pipeline refuses
+  ok   falls back cleanly
+  ok     and holds the value
+
+County is not State
+  ok   County matches its own rule
+  ok   County is not given the state
+  ok   State still fills
+
+address lines are cleaned
+  ok   Line 1 is the street alone
+  ok   Line 2 drops the repeated postal tail
+  ok   City still fills
+  ok   Postal Code still fills
+
+all passing
+
+
+--- held-answers ---
+
+an edit is held, not banked
+  ok   held answer is stored
+  ok   nothing has entered the sync queue
+
+it survives the content script being torn down
+  ok   still readable after a navigation
+  ok   badge shows there is something waiting
+
+a second answer from a later step joins it
+  ok   two answers held across two steps
+
+re-answering one question replaces it rather than duplicating
+  ok   still two held
+  ok   the newer wording won
+
+saving one moves only that one into the sync queue
+  ok   one left held
+  ok   one queued for sync
+  ok   the right one was queued
+  ok   the answer type came with it
+
+saving the rest empties the held list
+  ok   nothing held
+  ok   both queued
+  ok   the dropdown kept its type
+
+discarding removes without queueing
+  ok   discarded answer is gone
+  ok   and was never queued
+
+Clear empties both buckets
+  ok   something is held
+  ok   something is queued
+  ok   it reports clearing both
+  ok   held answers are gone
+  ok   queued answers are gone
+  ok   and nothing comes back on the next read
+  ok   the badge is empty
+
+a dismissed answer cannot come back on the next form
+  ok   it is held
+  ok   discarding empties the list
+  ok   it does not come back
+  ok   nor in different casing or spacing
+
+but a new question is unaffected
+  ok   a different question is still held
+
+saving one later lifts its dismissal
+  ok   dismissed, so not held
+  ok   saving a different one leaves the dismissal alone
+
+Clear also dismisses what it clears
+  ok   a cleared answer stays gone
+
+but the question stays open to a different answer
+  ok   a better answer to a cleared question is captured
+
+dismissals expire rather than lasting forever
+  ok   an expired dismissal no longer blocks capture
+
+an older build's permanent blacklist is discarded on upgrade
+  ok   questions blocked by the old shape are captured again
+
+all passing
+
+
+--- background ---
+  ok   Sync now succeeds with an empty local queue
+  ok   Sync now still fetches the dashboard's saved answers
+  ok   Sync now reports how many answers it pulled
+  ok   the pulled answers are cached for the content script
+  ok   queued answers are uploaded
+  ok   the local queue is cleared after a successful upload
+  ok   the upload count is reported
+  ok   a pull still happens after the push
+  ok   Clear reports how many answers it discarded
+  ok   Clear empties the local queue
+  ok   Clear uploads nothing
+  ok   Clear leaves answers already saved in the dashboard alone
+  ok   Clear succeeds with nothing queued
+  ok   one question queues exactly once
+  ok   the newest answer is the one queued
+  ok   a different question queues separately
+  ok   removing one answer reports it
+  ok   the removed answer is gone
+  ok   the other answers are untouched
+  ok   punctuation doesn't stop a removal
+  ok   sync uploads every queued answer
+  ok   a dropdown answer is uploaded
+  ok   a radio answer is uploaded
+  ok   a checkbox answer is uploaded
+  ok   the control type travels with the answer
+  ok   the choices travel with the answer
+  ok   the report counts them
+  ok   the queue is emptied once they are up
+  ok   the content script receives the saved answers
+  ok   Sync now uploads answers shown as held in the popup
+  ok   held answers clear only after moving to the confirmed upload queue
+  ok   large queues upload as 100/100/35
+  ok   all large-queue answers are confirmed and cleared
+  ok   a failed refresh cannot report a cached session as a successful sync
+  ok   an edit during upload survives acknowledgement of the older answer
+  ok   Sync reports newer edits that remain pending
+  ok   partial rejection is reported as incomplete
+  ok   only confirmed questions are removed
+  ok   simultaneous sync clicks share one upload
+  ok   Save keeps answers local until explicit Sync
+  ok   explicit Sync uploads a locally saved answer
+  ok   refresh preserves the selected profile and its school
+
+42/42 checks passed
+
+
+--- date-regressions ---
+  ok   date parser exists
+  ok   MM/YYYY handling exists
+  ok   native date handling exists
+  ok   year-only does not invent a month
+
+4/4 checks passed
+
+--- row-index ---
+before reconciliation
+   currentTitle         index 0  -> "Azure DevOps Engineer"
+   currentCompany       index 0  -> "Azure DevOps Engineer"
+   experienceLocation   index 0  -> "Azure DevOps Engineer"
+   currentTitle         index 2  -> null
+   currentCompany       index 1  -> "Senior DevOps Engineer"
+   experienceLocation   index 1  -> "Senior DevOps Engineer"
+
+after reconciliation
+   ok   currentTitle         index 0  -> "Azure DevOps Engineer"
+   ok   currentCompany       index 0  -> "Azure DevOps Engineer"
+   ok   experienceLocation   index 0  -> "Azure DevOps Engineer"
+   ok   currentTitle         index 1  -> "Senior DevOps Engineer"
+   ok   currentCompany       index 1  -> "Senior DevOps Engineer"
+   ok   experienceLocation   index 1  -> "Senior DevOps Engineer"
+
+every field in a row shares its row's index
+
+--- ui-regressions ---
+  ok   no dashboard component parses a response body outside a guard
+  ok   the shared client helper never rejects
+  ok   optimistic writes roll back when the request fails
+  ok   created rows replace a matching row instead of duplicating it
+  ok   POST /api/profiles seeds every profile section, not just contact details
+  ok   a part-filled profile row survives a save
+  ok   activity buckets use the local calendar, not UTC
+  ok   localDateKey brackets the day correctly either side of midnight
+  ok   the greeting and today count are computed client-side
+  ok   the resume file input resets so the same file can be picked twice
+  ok   the free-text start date is not bound to an <input type="date">
+  ok   clipboard success is only claimed when the write resolved
+  ok   a database outage is reported as 503 with a cause, not an opaque 500
+  ok   every legal link in the footer has a page behind it
+
+14 checks passed
+
+--- requested-fixes ---
+PASS CC-305 date formats and split fields use the current local date
+PASS authorization spelling, booleans, polarity, and exact saved questions
+PASS native choices reject opposite polarity, disabled options and unavailable sources
+PASS school uses the correct profile row and falls back only when the profile is blank
+PASS consent statements stay separate in one fieldset and use actual Yes/No branches
+PASS custom sources search multiple parents and three levels before falling back
+PASS searchable source menus wait for LinkedIn and do not let saved sources override it
+PASS school prompt searches with Enter and commits on the owning input
+8 requested-fix groups passed

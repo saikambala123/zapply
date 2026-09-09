@@ -1,3 +1,5 @@
+Latest repair release: [Zapply 1.13.11 update and installation notes](UPDATE-1.13.11.md).
+
 # Zapply
 
 A job application autofill tool: a Chrome/Edge/Firefox extension that fills application forms in one click, remembers the answers you write, and logs every application to a tracker — backed by a Next.js + MongoDB app that deploys to Vercel.
