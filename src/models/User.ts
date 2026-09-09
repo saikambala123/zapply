@@ -17,6 +17,14 @@ const SettingsSchema = new Schema(
     autoAttachResume: { type: Boolean, default: false },   // attach the stored resume to file inputs
     eeoFallbackDecline: { type: Boolean, default: false }, // answer EEO questions with "decline to self-identify"
 
+    // Tick "I agree to the Terms / Privacy Policy" style boxes. Scoped in the
+    // rule table to acceptance of terms, privacy notices and accuracy
+    // statements only: marketing opt-ins, anything phrased as declining, and
+    // every voluntary disclosure are excluded there and cannot be reached from
+    // here. Defaults on because a blocked Create Account step stops the
+    // application dead; set false to leave every agreement to the applicant.
+    acceptAgreements: { type: Boolean, default: true },
+
     fillDelayMs: { type: Number, default: 120 },
     dailyGoal: { type: Number, default: 10 },
     excludedDomains: { type: [String], default: [] },
@@ -36,6 +44,7 @@ export const SETTINGS_FIELDS: Record<string, (v: unknown) => unknown> = {
   overwriteExisting: Boolean,
   autoAttachResume: Boolean,
   eeoFallbackDecline: Boolean,
+  acceptAgreements: Boolean,
   fillDelayMs: (v) => Math.min(5000, Math.max(0, Number(v) || 0)),
   dailyGoal: (v) => Math.min(500, Math.max(1, Number(v) || 10)),
   excludedDomains: (v) =>
