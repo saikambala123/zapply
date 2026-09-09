@@ -427,7 +427,7 @@ export function toEducation(v: unknown) {
       if (rawDegree && normalizedDegree === "Other" && !field) notes.unshift(rawDegree);
 
       return {
-        school: str(o.school ?? o.institution ?? o.university ?? o.college ?? o.institute ?? o.schoolName),
+        school: str(o.school || o.institution || o.university || o.college || o.institute || o.schoolName || o.school_name),
         degree: normalizedDegree,
         fieldOfStudy: field,
         gpa: str(o.gpa ?? o.grade ?? o.cgpa ?? o.percentage ?? o.marks),

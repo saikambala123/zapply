@@ -20,24 +20,7 @@ export const OPTIONS = () => cors();
  * a wrong answer is a false declaration they may not notice.
  */
 const IDENTITY_QUESTION_RE =
-  /(voluntary\s+self[-\s]?identification|self[-\s]?identification\s+of\s+disability|form\s*cc-?305|cc-?305|section\s*503|omb\s*control\s*number|voluntary\s+disclosure|equal\s+employment\s+opportunity|\bveteran\b|\bdisabilit(y|ies)\b|\bethnicity\b|\brace\b|\bgender\b|\bemployee\s*(id|number)\b|\bdate\s*of\s*birth\b|\bsocial\s*security\b|\bssn\b)/i;
-
-/**
- * Anything that is a declaration about the applicant's right to work.
- *
- * Deliberately broader than the rules that answer these questions: this list
- * only has to recognise the subject, not classify the question, and a refusal
- * costs a blank field the applicant fills in themselves.
- */
-const WORK_ELIGIBILITY_QUESTION_RE =
-  /\b(sponsor\w*|visa|work\s*permit|immigration|right\s*to\s*work|authoriz\w*\s*to\s*work|authoris\w*\s*to\s*work|work\s*authoriz\w*|work\s*authoris\w*|legally\s*(?:authoriz|authoris|entitled|permitted|eligible)\w*|employment\s*eligib\w*|h-?1b|green\s*card|permanent\s*resident|citizenship\s*status)\b/i;
-
-/**
- * Claims about the applicant's own history that no profile records — most of
- * them about their relationship with the employer they are applying to.
- */
-const UNKNOWABLE_HISTORY_QUESTION_RE =
-  /\b(have\s*you\s*ever|have\s*you\s*previously|were\s*you\s*ever|are\s*you\s*(currently\s*)?(participating|enrolled|registered)|former\s*employee|previously\s*(employed|worked|applied)|currently\s*employed\s*by|related\s*to\s*(any|an)?\s*(current|former)?\s*employee|immediate\s*family\s*member|ever\s*(applied|worked|been\s*employed))\b/i;
+  /(voluntary\s+self[-\s]?identification|self[-\s]?identification\s+of\s+disability|form\s*cc-?305|cc-?305|section\s*503|omb\s*control\s*number|voluntary\s+disclosure|equal\s+employment\s+opportunity|\bveteran\b|\bdisabilit(y|ies)\b|\bethnicity\b|\brace\b|\bgender\b|\bemployee\s*(id|number)\b|\bdate\s*of\s*birth\b|\bsocial\s*security\b|\bssn\b|\bsponsor|\bvisa\b|\bwork\s*authori[sz]|\bauthori[sz]\w*\b.{0,50}\bwork\b)/i;
 
 /**
  * Premium — writes an answer to a custom application question using the
@@ -69,30 +52,6 @@ export const POST = handler(async (req: NextRequest) => {
    */
   if (IDENTITY_QUESTION_RE.test(String(question))) {
     return ok({ answer: "", skipped: "identity" });
-  }
-
-  /**
-   * Declarations about the right to work, and factual claims about the
-   * applicant's own history, are refused for the same reason as identity
-   * questions: a generated answer is never the right output.
-   *
-   * Both reached this route in production. Four phrasings of the work
-   * authorisation question matched no rule in the extension's table and were
-   * answered here — an inferred immigration status stated to an employer on a
-   * form the applicant signs. And "Have you ever, or are you currently
-   * participating in a student training program offered by [employer]…" came
-   * back "Yes" with nothing in the profile to support it.
-   *
-   * The extension now blocks both before they are sent. The refusal is
-   * duplicated here because the extension is the caller that got it wrong once
-   * already, and a released build is not upgraded on the same day as the
-   * server.
-   */
-  if (WORK_ELIGIBILITY_QUESTION_RE.test(String(question))) {
-    return ok({ answer: "", skipped: "work-eligibility" });
-  }
-  if (UNKNOWABLE_HISTORY_QUESTION_RE.test(String(question))) {
-    return ok({ answer: "", skipped: "unknowable" });
   }
 
   await connectDB();
