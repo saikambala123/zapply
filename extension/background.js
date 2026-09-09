@@ -30,10 +30,17 @@ let lastRefreshAt = 0;
 /*  Storage helpers                                                    */
 /* ------------------------------------------------------------------ */
 
+const storageCall = (method, value) => new Promise((resolve, reject) => {
+  chrome.storage.local[method](value, (result) => {
+    const error = chrome.runtime.lastError;
+    if (error) reject(new Error(error.message || "Could not save extension data."));
+    else resolve(result);
+  });
+});
 const store = {
-  get: (keys) => new Promise((r) => chrome.storage.local.get(keys, r)),
-  set: (obj) => new Promise((r) => chrome.storage.local.set(obj, r)),
-  remove: (keys) => new Promise((r) => chrome.storage.local.remove(keys, r)),
+  get: async (keys) => (await storageCall("get", keys)) || {},
+  set: (obj) => storageCall("set", obj),
+  remove: (keys) => storageCall("remove", keys),
 };
 
 async function apiBase() {
@@ -91,7 +98,7 @@ async function api(path, options = {}) {
 
 /** Bootstrap payload, cached so a burst of tabs costs one request. */
 async function getSession({ force = false } = {}) {
-  const { session, sessionAt, token } = await store.get(["session", "sessionAt", "token"]);
+  const { session, sessionAt, token, selectedProfileId } = await store.get(["session", "sessionAt", "token", "selectedProfileId"]);
   if (!token) return null;
 
   const age = sessionAt ? Date.now() - sessionAt : Infinity;
@@ -107,9 +114,16 @@ async function getSession({ force = false } = {}) {
   }
 
   const res = await api("/api/extension/bootstrap");
-  if (!res.ok) return session ?? null;
+  if (!res.ok) {
+    if (force) throw new Error(res.error || "Could not refresh saved answers.");
+    return session ?? null;
+  }
+  if (!Array.isArray(res.data?.profiles) || !Array.isArray(res.data?.responses)) {
+    throw new Error("Zapply returned an incomplete sync response. Please update the portal and try again.");
+  }
 
   const active =
+    res.data.profiles.find((p) => p._id === selectedProfileId) ??
     res.data.profiles.find((p) => p._id === res.data.activeProfileId) ??
     res.data.profiles.find((p) => p.isDefault) ??
     res.data.profiles[0] ??
@@ -172,106 +186,94 @@ function setBadge(text, color = "#5B2AD6") {
   if (text) chrome.action.setBadgeBackgroundColor({ color });
 }
 
-/**
- * The key two phrasings of the same question share.
- *
- * Deliberately identical to normalizeQuestion() on the server, so an answer that
- * will *replace* a saved one is queued once here and lands on that same record
- * when it syncs, rather than arriving as a second, competing entry.
- */
-/**
- * Upload whatever is waiting locally, and clear it only if the server took it.
- *
- * Saving an answer moved it from `heldAnswers` into `pendingResponses` and
- * stopped there, so it sat in the browser until the applicant happened to press
- * "Sync now" — which is why an answer saved on one application was not there to
- * be reused on the next one. Both the Save path and the Sync button run this.
- */
-async function pushQueue() {
-  const { pendingResponses, token } = await store.get(["pendingResponses", "token"]);
-  const responses = pendingResponses ?? [];
-  if (!token) return { ok: false, error: "Pair the extension from your dashboard first.", pushed: 0 };
-  if (!responses.length) return { ok: true, data: { responsesSaved: 0 }, pushed: 0 };
+// Serialize local answer mutations, but leave network waits outside the lock
+// so a new edit during an upload is captured immediately.
+let answerMutation = Promise.resolve();
+function editAnswers(fn) {
+  const task = answerMutation.then(fn);
+  answerMutation = task.catch(() => {});
+  return task;
+}
 
-  const res = await api("/api/extension/sync", {
-    method: "POST",
-    body: JSON.stringify({ responses }),
+async function promoteHeld(questions) {
+  return editAnswers(async () => {
+    const { heldAnswers = [], pendingResponses = [] } = await store.get(["heldAnswers", "pendingResponses"]);
+    const wanted = questions?.length ? new Set(questions.map(queueKey)) : null;
+    const moving = heldAnswers.filter((r) => !wanted || wanted.has(queueKey(r.question)));
+    const keeping = heldAnswers.filter((r) => wanted && !wanted.has(queueKey(r.question)));
+    const merged = new Map(pendingResponses.map((r) => [queueKey(r.question), r]));
+    for (const r of moving) merged.set(queueKey(r.question), { ...r, queuedAt: Date.now() });
+    await store.set({ heldAnswers: keeping, pendingResponses: Array.from(merged.values()) });
+    return moving.length;
   });
+}
 
-  if (res.ok) {
-    // Remove only keys the server explicitly confirmed. Previously every 200
-    // response cleared the local queue, including a perfectly valid HTTP 200
-    // with responsesSaved=0 when the question was rejected by validation. That
-    // made the answer disappear from Pending while never reaching Saved Answers.
-    const reported = Array.isArray(res.data?.savedKeys) ? res.data.savedKeys : null;
-    /**
-     * Answers the server has looked at and will never accept.
-     *
-     * `/api/extension/sync` drops anything that fails `isRealQuestion` — a
-     * capture artefact, a bare option label, a string too short to be a
-     * question — and names them in `rejectedKeys`. This code ignored that
-     * field, so those entries were never confirmed and never removed: they sat
-     * in `pendingResponses` for good. Once the queue held nothing else, every
-     * press of Sync now uploaded them, had them rejected, counted zero
-     * confirmed, and reported "Sync failed — retry" for ever. That is the
-     * reported broken Sync button, and it also blocked the pull half from being
-     * reported even when it had succeeded.
-     *
-     * Re-offering them cannot change the answer, so they are dropped.
-     */
-    const rejected = new Set(Array.isArray(res.data?.rejectedKeys) ? res.data.rejectedKeys : []);
-    const { pendingResponses: now } = await store.get("pendingResponses");
-    let remaining;
-    if (reported) {
-      const confirmed = new Set(reported);
-      remaining = (now ?? []).filter((r) => {
-        const key = queueKey(r.question);
-        return !confirmed.has(key) && !rejected.has(key);
-      });
-    } else if ((res.data?.responsesSaved ?? 0) >= responses.length) {
-      /**
-       * A server that does not say *which* answers it wrote.
-       *
-       * Requiring `savedKeys` is right when the field is there — it is what
-       * stops a rejected answer being dropped. But an older deployment omits it
-       * entirely, and then nothing is ever confirmed: the queue never empties,
-       * the same answers are re-uploaded on every sync, and Pending never
-       * clears however many times the applicant presses Sync. When the server
-       * reports it wrote at least as many as were offered, take it at its word
-       * for the batch that was just sent.
-       */
-      const uploaded = new Set(responses.map((r) => queueKey(r.question)));
-      remaining = (now ?? []).filter((r) => !uploaded.has(queueKey(r.question)));
-    } else {
-      remaining = now ?? [];
-    }
-    if (remaining.length) await store.set({ pendingResponses: remaining });
-    else await store.remove(["pendingResponses"]);
+const answerRevision = (r) => JSON.stringify([r.question, r.answer, r.inputType, r.options, r.domain, r.queuedAt]);
+const uploadAnswer = (r) => ({
+  question: String(r.question ?? "").trim().slice(0, 2000),
+  answer: String(r.answer ?? "").trim().slice(0, 10000),
+  inputType: String(r.inputType || "text").slice(0, 40),
+  options: Array.isArray(r.options) ? r.options.slice(0, 100).map((v) => String(v).slice(0, 500)) : [],
+  ...(r.ats ? { ats: String(r.ats).slice(0, 60) } : {}),
+  ...(r.domain ? { domain: String(r.domain).slice(0, 300) } : {}),
+});
+
+async function pushQueue() {
+  const { pendingResponses = [], token } = await store.get(["pendingResponses", "token"]);
+  if (!token) return { ok: false, error: "Pair the extension from your dashboard first.", pushed: 0 };
+  const responses = [...new Map(pendingResponses.map((r) => [queueKey(r.question), r])).values()];
+  let pushed = 0;
+  let failure = null;
+  // The endpoint accepts at most 200; small batches also fit serverless limits.
+  for (let start = 0; start < responses.length; start += 100) {
+    const batch = responses.slice(start, start + 100);
+    const valid = batch.filter((r) => String(r.question ?? "").length <= 2000 && String(r.answer ?? "").length <= 10000);
+    if (!valid.length) { failure = "Some answers exceed the supported length and remain pending for review."; continue; }
+    const res = await api("/api/extension/sync", { method: "POST", body: JSON.stringify({ responses: valid.map(uploadAnswer) }) });
+    if (!res.ok) { failure = res.error; break; }
+    const keys = Array.isArray(res.data?.savedKeys) ? res.data.savedKeys
+      : Number(res.data?.responsesSaved) >= valid.length ? valid.map((r) => queueKey(r.question)) : [];
+    const confirmed = new Set(keys);
+    const sent = new Map(valid.filter((r) => confirmed.has(queueKey(r.question)))
+      .map((r) => [queueKey(r.question), answerRevision(r)]));
+    pushed += sent.size;
+    await editAnswers(async () => {
+      const { pendingResponses: now = [], session } = await store.get(["pendingResponses", "session"]);
+      // A newer answer to the same question must survive the older upload.
+      const remaining = now.filter((r) => sent.get(queueKey(r.question)) !== answerRevision(r));
+      if (remaining.length) await store.set({ pendingResponses: remaining });
+      else await store.remove("pendingResponses");
+      // Keep confirmed answers usable if the following bootstrap request fails.
+      if (session) {
+        const merged = new Map((session.responses ?? []).map((r) => [queueKey(r.question), r]));
+        for (const r of batch) if (sent.has(queueKey(r.question)))
+          merged.set(queueKey(r.question), { ...uploadAnswer(r), normalizedKey: queueKey(r.question) });
+        await store.set({ session: { ...session, responses: [...merged.values()] }, sessionAt: 0 });
+      }
+    });
+    if (sent.size < batch.length) failure = "Some answers were not accepted. They remain pending; review their questions and retry Sync now.";
   }
-  // The server reports what it actually wrote; the local count is only what we
-  // offered it.
-  const confirmedCount = res.ok ? (res.data?.responsesSaved ?? 0) : 0;
-  const rejectedCount = res.ok && Array.isArray(res.data?.rejectedKeys) ? res.data.rejectedKeys.length : 0;
+  const { pendingResponses: remaining = [] } = await store.get("pendingResponses");
+  return { ok: !failure, error: failure, pushed, remaining: remaining.length };
+}
 
-  /**
-   * A batch the server has fully dealt with is a successful sync.
-   *
-   * Requiring `confirmedCount > 0` treated "everything you sent was a capture
-   * artefact I have now discarded" as a failure — which it is not, and which
-   * the applicant could do nothing about. Failure is now only what it should
-   * be: the request did not succeed, or the server took none of the batch and
-   * rejected none of it either, which means something is genuinely wrong.
-   */
-  const handled = confirmedCount > 0 || rejectedCount > 0 || responses.length === 0;
-  return {
-    ...res,
-    ok: res.ok && handled,
-    pushed: confirmedCount,
-    discarded: rejectedCount,
-    error: res.ok && !handled
-      ? "Zapply could not save these answers. They remain pending; review the question and try Sync again."
-      : res.error,
-  };
+let syncing = null;
+function syncPending() {
+  if (syncing) return syncing;
+  syncing = (async () => {
+    await promoteHeld();
+    const pushed = await pushQueue();
+    let session = null, pullError = null;
+    try { session = await getSession({ force: true }); }
+    catch (err) { pullError = err.message; }
+    await refreshBadge();
+    const error = pushed.error || pullError || (!session ? "Pair the extension from your dashboard first." : null);
+    return { ok: !error, error, data: {
+      responsesSaved: pushed.pushed || 0, savedAnswers: session?.responses?.length ?? 0,
+      pending: pushed.remaining ?? 0, syncedAt: session?.syncedAt,
+    } };
+  })().finally(() => { syncing = null; });
+  return syncing;
 }
 
 function queueKey(question) {
@@ -390,7 +392,7 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
       }
 
       case "ZAPPLY_UNPAIR": {
-        await store.remove(["token", "user", "session", "sessionAt", "pendingResponses", "heldAnswers", "dismissedAnswers"]);
+        await store.remove(["token", "user", "session", "sessionAt", "pendingResponses", "heldAnswers", "dismissedAnswers", "selectedProfileId"]);
         setBadge("");
         return respond({ ok: true });
       }
@@ -408,7 +410,7 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
         const profile = session.profiles.find((p) => p._id === msg.profileId);
         if (profile) {
           session.profile = profile;
-          await store.set({ session });
+          await store.set({ session, selectedProfileId: profile._id });
         }
         return respond({ ok: true, data: session });
       }
@@ -428,7 +430,7 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
        * saving moves an answer into `pendingResponses`, which is still only
        * sent on an explicit Sync.
        */
-      case "ZAPPLY_HOLD_ANSWERS": {
+      case "ZAPPLY_HOLD_ANSWERS": return editAnswers(async () => {
         const { heldAnswers, dismissedAnswers } = await store.get(["heldAnswers", "dismissedAnswers"]);
         /**
          * A dismissal turns down *that answer*, not the question forever.
@@ -460,7 +462,7 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
         await store.set({ heldAnswers: held, dismissedAnswers: dismissed });
         await refreshBadge();
         return respond({ ok: true, held: held.length });
-      }
+      });
 
       case "ZAPPLY_GET_HELD": {
         const { heldAnswers } = await store.get("heldAnswers");
@@ -469,55 +471,12 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
 
       /** Move held answers into the sync queue. `questions` omitted = all. */
       case "ZAPPLY_SAVE_HELD": {
-        const { heldAnswers, pendingResponses } = await store.get(["heldAnswers", "pendingResponses"]);
-        const wanted = msg.questions?.length
-          ? new Set(msg.questions.map((q) => queueKey(q)))
-          : null;
-        const held = heldAnswers ?? [];
-        const moving = held.filter((r) => !wanted || wanted.has(queueKey(r.question)));
-        const keeping = held.filter((r) => wanted && !wanted.has(queueKey(r.question)));
-
-        const merged = new Map((pendingResponses ?? []).map((r) => [queueKey(r.question), r]));
-        for (const r of moving) merged.set(queueKey(r.question), { ...r, queuedAt: Date.now() });
-
-        // Saving an answer withdraws any earlier rejection of it.
-        const { dismissedAnswers: previouslyDismissed } = await store.get("dismissedAnswers");
-        const stillDismissed = pruneDismissals(previouslyDismissed);
-        moving.forEach((r) => { delete stillDismissed[dismissalKey(r.question, r.answer)]; });
-
-        await store.set({
-          heldAnswers: keeping,
-          pendingResponses: Array.from(merged.values()).slice(-500),
-          dismissedAnswers: stillDismissed,
-        });
-
-        /**
-         * Save means saved.
-         *
-         * Moving the answer into the local queue and stopping there is why
-         * pressing Save appeared to do nothing: the answer never reached the
-         * dashboard, so it was not in Saved Answers to be reused, and the next
-         * application filled without it. The upload runs here, and the session
-         * is re-read straight afterwards so the answer is available to the very
-         * next fill in this browser without another round trip.
-         *
-         * A failure is not an error the applicant has to act on — the answer
-         * stays in the queue and the Sync button retries it.
-         */
-        const pushed = await pushQueue();
-        if (pushed.ok) await getSession({ force: true });
+        const saved = await promoteHeld(msg.questions);
         await refreshBadge();
-
-        return respond({
-          ok: true,
-          saved: moving.length,
-          synced: pushed.ok,
-          uploaded: pushed.pushed ?? 0,
-          error: pushed.ok ? undefined : pushed.error,
-        });
+        return respond({ ok: true, saved, synced: false, uploaded: 0 });
       }
 
-      case "ZAPPLY_DISCARD_HELD": {
+      case "ZAPPLY_DISCARD_HELD": return editAnswers(async () => {
         const { heldAnswers, dismissedAnswers } = await store.get(["heldAnswers", "dismissedAnswers"]);
         const held = heldAnswers ?? [];
         const wanted = msg.questions?.length ? new Set(msg.questions.map((q) => queueKey(q))) : null;
@@ -541,9 +500,9 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
         await store.set({ heldAnswers: keeping, dismissedAnswers: trimmed });
         await refreshBadge();
         return respond({ ok: true, dismissed: Object.keys(trimmed).length });
-      }
+      });
 
-      case "ZAPPLY_QUEUE_RESPONSES": {
+      case "ZAPPLY_QUEUE_RESPONSES": return editAnswers(async () => {
         const { pendingResponses } = await store.get("pendingResponses");
         // Merged on the same normalisation the server uses, so re-answering one
         // question replaces its queued entry instead of adding a near-duplicate
@@ -558,7 +517,7 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
         await store.set({ pendingResponses: Array.from(merged.values()).slice(-500) });
         await refreshBadge();
         return respond({ ok: true, pending: merged.size });
-      }
+      });
 
       case "ZAPPLY_GET_PENDING": {
         const { pendingResponses } = await store.get("pendingResponses");
@@ -582,7 +541,7 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
        * everything else waiting with it. Matched on the same normalisation the
        * queue is keyed by, so the entry removed is the one shown.
        */
-      case "ZAPPLY_DELETE_PENDING": {
+      case "ZAPPLY_DELETE_PENDING": return editAnswers(async () => {
         const { pendingResponses } = await store.get("pendingResponses");
         const queue = pendingResponses ?? [];
         const target = queueKey(msg.question);
@@ -594,9 +553,9 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
           kept.length ? "#FFB020" : (session?.profile ? "#00C2A8" : "#FFB020")
         );
         return respond({ ok: true, data: { removed: queue.length - kept.length, pending: kept.length } });
-      }
+      });
 
-      case "ZAPPLY_CLEAR_PENDING": {
+      case "ZAPPLY_CLEAR_PENDING": return editAnswers(async () => {
         const { pendingResponses, heldAnswers } = await store.get(["pendingResponses", "heldAnswers"]);
         /**
          * Clear means clear.
@@ -634,7 +593,7 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
         await store.set({ dismissedAnswers: trimmed });
         await refreshBadge();
         return respond({ ok: true, data: { cleared } });
-      }
+      });
 
       /**
        * Sync now is two-way, and the pull half is the half that matters most:
@@ -645,44 +604,7 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
        * nothing. The refresh now always runs.
        */
       case "ZAPPLY_SYNC_PENDING": {
-        const pushed = await pushQueue();
-
-        const session = await getSession({ force: true });
-        const pulled = session?.responses?.length ?? 0;
-
-        if (pushed.ok && session) await refreshBadge();
-        else setBadge("!", "#E5484D");
-
-        /**
-         * The pull is reported even when the push failed.
-         *
-         * Returning early on a push failure threw away a completed download:
-         * answers the applicant had typed into the dashboard were fetched,
-         * cached and ready to use, and the popup was told only "Sync failed".
-         * The two halves succeed independently and are now reported that way,
-         * so a stuck upload never hides a working download.
-         */
-        if (!session) {
-          return respond({
-            ok: false,
-            error: pushed.ok
-              ? "Couldn't reach Zapply to load your saved answers."
-              : pushed.error,
-          });
-        }
-
-        return respond({
-          ok: true,
-          data: {
-            // What the server confirmed it wrote, not what we handed it.
-            responsesSaved: pushed.pushed ?? 0,
-            discarded: pushed.discarded ?? 0,
-            savedAnswers: pulled,
-            pushFailed: !pushed.ok,
-            pushError: pushed.ok ? null : pushed.error,
-            syncedAt: session.syncedAt ?? new Date().toISOString(),
-          },
-        });
+        return respond(await syncPending());
       }
 
       /* --- application tracking sync (never receives saved-response auto flushes) --- */
@@ -729,7 +651,7 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
       default:
         return respond({ ok: false, error: "Unknown message." });
     }
-  })();
+  })().catch((err) => respond({ ok: false, error: err?.message || "Zapply could not complete this action. Please retry." }));
 
   return true; // keep the channel open for the async work above
 });
@@ -748,7 +670,7 @@ chrome.runtime.onInstalled.addListener(async ({ reason }) => {
   }
 });
 
-chrome.runtime.onStartup.addListener(() => getSession({ force: true }));
+chrome.runtime.onStartup.addListener(() => refreshSession());
 
 // Returning from the dashboard to a job page should pick up whatever changed —
 // but at most once a minute, not on every tab switch.

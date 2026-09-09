@@ -391,7 +391,7 @@
    * from the scan so widening it never means answering the page's furniture.
    */
   const PAGE_CHROME_RE =
-    /(^|[\s\-_])(site-?search|searchform|search-?form|newsletter|subscribe|cookie|consent|gdpr|login|log-?in|sign-?in|signin|locale|language|currency|promo-?code|coupon|chat|livechat|support-?widget)([\s\-_]|$)/i;
+    /(^|[\s\-_])(site-?search|searchform|search-?form|newsletter|subscribe|cookie|login|log-?in|sign-?in|signin|locale|language|currency|promo-?code|coupon|chat|livechat|support-?widget)([\s\-_]|$)/i;
 
   /** A button that changes the form rather than answering a question. */
   const ACTION_BUTTON_RE =
@@ -840,8 +840,9 @@
             if (el.type === "radio" || el.type === "checkbox" ||
                 el.getAttribute("role") === "radio" || el.getAttribute("role") === "checkbox") {
               const role = el.getAttribute("role") || el.type;
-              const name = el.getAttribute("name");
-              const container = el.closest("fieldset, [role='radiogroup'], [role='group']");
+              const standalone = M.isStandaloneConsent?.(el);
+              const name = standalone ? "" : el.getAttribute("name");
+              const container = standalone ? null : el.closest("fieldset, [role='radiogroup'], [role='group']");
               if (container && !container.dataset.zapplyGroupKey) {
                 container.dataset.zapplyGroupKey = `g${Math.random().toString(36).slice(2)}`;
               }
@@ -888,6 +889,16 @@
         deduped[deduped.indexOf(existing)] = field;
         byControl.set(key, field);
       }
+    }
+
+    // Some portals use a second source control rather than a nested menu.
+    // Only the immediate follow-up in the same form inherits the source rule.
+    for (let i = 1; i < deduped.length; i++) {
+      const current = deduped[i], previous = deduped[i - 1];
+      const own = String(current.label || "").split("|")[0].trim();
+      if (!current.rule && previous.rule?.key === "howDidYouHear" &&
+          /^(?:please\s+)?(?:specify|source details?|source name|sub[- ]?category)\b/i.test(own) &&
+          current.el.closest("form") === previous.el.closest("form")) current.rule = previous.rule;
     }
 
     assignRowIndexes(deduped, EXPERIENCE_KEYS, ["currentCompany", "currentTitle", "responsibilities"]);
@@ -1033,31 +1044,6 @@
    * tried separately — matching the whole joined string diluted the score badly
    * enough that saved answers routinely failed to apply.
    */
-  /**
-   * A declaration about the right to work.
-   *
-   * Kept here as well as in the rule table because the rule table can only
-   * protect a question it recognises. Four real phrasings matched no rule at
-   * all and were answered by the model — an inferred immigration status stated
-   * to an employer on a form the applicant signs. The floor has to sit below
-   * the matcher, not inside it.
-   */
-  const LEGAL_STATUS_LABEL_RE =
-    /\b(sponsor\w*|visa|work\s*permit|immigration|right\s*to\s*work|authoriz\w*\s*to\s*work|authoris\w*\s*to\s*work|work\s*authoriz\w*|work\s*authoris\w*|legally\s*(?:authoriz|authoris|entitled|permitted|eligible)\w*|employment\s*eligib\w*|h-?1b|green\s*card|permanent\s*resident|citizenship\s*status)\b/i;
-
-  /**
-   * A factual claim about the applicant's own history that no profile holds.
-   *
-   * "Have you ever, or are you currently participating in a student training
-   * program offered by Dana-Farber's Office of Workforce Development…" was
-   * answered "Yes". Nothing in the profile says anything about that programme,
-   * so the answer was invented — and it is a claim about the applicant's
-   * relationship with the employer they are applying to. There is no version of
-   * this the model can get right, only versions it happens not to get wrong.
-   */
-  const UNKNOWABLE_HISTORY_RE =
-    /\b(have\s*you\s*ever|have\s*you\s*previously|were\s*you\s*ever|are\s*you\s*(currently\s*)?(participating|enrolled|registered)|former\s*employee|previously\s*(employed|worked|applied)|currently\s*employed\s*by|related\s*to\s*(any|an)?\s*(current|former)?\s*employee|immediate\s*family\s*member|ever\s*(applied|worked|been\s*employed)|do\s*you\s*know\s*(anyone|someone)\s*(who\s*)?(works|working))\b/i;
-
   function findSavedAnswer(field) {
     const responses = state.session?.responses ?? [];
     if (!responses.length) return null;
@@ -1165,22 +1151,6 @@
         .test(String(field?.label ?? "").split("|")[0])) {
       return null;
     }
-
-    /**
-     * The same floor the model works under, applied to the queue.
-     *
-     * `authorizedToWork` and `requireSponsorship` are `profileOnly`, so
-     * planField already keeps saved answers away from them — but only when one
-     * of those rules matched. When none did, the field was open to any saved
-     * answer whose question looked similar, and "Yes" banked against one
-     * portal's sponsorship wording replays as "Yes" against another's
-     * *inverted* wording, which reverses the meaning. A stored answer cannot
-     * carry the direction of the question it was stored against, so these are
-     * answered from the profile or not at all.
-     */
-    const ownLabel = String(field?.label ?? "").split("|")[0];
-    if (LEGAL_STATUS_LABEL_RE.test(ownLabel)) return null;
-    if (UNKNOWABLE_HISTORY_RE.test(ownLabel)) return null;
 
     /**
      * For a disclosure question the saved answer has to reduce to a real
@@ -1415,25 +1385,6 @@
         ok = el.tagName === "SELECT"
           ? M.setSelectValue(el, value, rule?.options, field.label)
           : await M.setComboboxValue(el, value, quirks.dropdownDelay ?? 900, rule?.options, field.label);
-
-        /**
-         * A search prompt whose list does not contain the answer.
-         *
-         * Workday's "School or University" is a combobox by every structural
-         * signal, so it is driven as one — and the applicant's university is
-         * not in the tenant's list, so no option scores above the floor and the
-         * field is left empty beside a required marker. These prompts do take
-         * free text; it has to be typed and committed with Enter rather than
-         * picked. Only offered for values that are genuinely open — a school,
-         * an employer, a job title — never for a fixed-choice menu, which
-         * `setTypeaheadValue` refuses on its own by checking for a backing
-         * <select>.
-         */
-        if (!ok && el.tagName !== "SELECT" && rule?.freeText) {
-          try {
-            ok = await M.setTypeaheadValue(el, String(value), quirks.dropdownDelay ?? 900, field.label);
-          } catch { ok = false; }
-        }
       } else if (field.kind === "radio") {
         ok = M.setRadioValue(el, value, rule?.options, field.label);
       } else if (field.kind === "checkbox") {
@@ -1507,7 +1458,7 @@
     // A field counts as filled when the strict check passes, or when the setter
     // succeeded and the control now visibly holds something.
     const verified = verifyField(field, value);
-    const filled = verified || (ok && M.hasValue(el));
+    const filled = field.kind === "select" ? (ok && M.hasValue(el)) : (verified || (ok && M.hasValue(el)));
     setTimeout(() => endProgrammatic(el), 0);
     return Boolean(filled);
   }
@@ -1564,7 +1515,8 @@
     // that is already in the form — whether the applicant typed it, the portal
     // prefilled it, or an earlier run put it there. Running autofill again
     // therefore only ever fills what is still blank.
-    if (kind !== "file" && M.hasValue(el) && settings?.overwriteExisting !== true) {
+    const refreshToday = ["selfIdDate", "todayDate"].includes(field.rule?.key);
+    if (kind !== "file" && !refreshToday && M.hasValue(el) && settings?.overwriteExisting !== true) {
       return { status: "already", key: field.rule?.key ?? null };
     }
 
@@ -1576,20 +1528,6 @@
     // from saved answers and the AI pass as well as from the profile, which is
     // the only way it stays genuinely blank.
     if (rule?.blank) return { status: "skipped", key: rule.key };
-
-    /**
-     * An asserted answer: a consent box Zapply ticks on the applicant's behalf
-     * rather than a fact it reads from their profile. This is the one place the
-     * fill states something the applicant has not recorded anywhere, so it is
-     * the one place with a switch, and the write is always marked for review.
-     */
-    if (rule?.asserted) {
-      if (settings?.acceptAgreements === false) return { status: "skipped", key: rule.key };
-      let asserted = null;
-      try { asserted = rule.value(profile, el, label, field.index ?? 0); } catch { asserted = null; }
-      if (!asserted) return { status: "skipped", key: rule.key };
-      return { status: "fill", key: rule.key, value: asserted, rule, source: "asserted" };
-    }
 
     /**
      * A saved answer to *this exact question* normally outranks a derived one —
@@ -1619,6 +1557,21 @@
       /\b(e-?mail|phone|mobile|telephone|country\s*code|area\s*code|extension|first\s*name|last\s*name|middle\s*name|full\s*name|date\s*of\s*birth|address\s*line|postal|zip\s*code)\b/i
         .test(String(field?.label ?? "").split("|")[0]);
 
+    // Eligibility saved answers require the exact question, including negative
+    // wording and country. They only fill a missing explicit profile answer.
+    if (rule?.eligibility) {
+      if (profileValue) return { status: "fill", key: rule.key, value: profileValue, rule, source: "profile" };
+      const key = (q) => String(q ?? "").normalize("NFKC").toLowerCase()
+        .replace(/authoriz/g, "authoris").replace(/[’']/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+      const question = key(primaryQuestion(field));
+      const exact = canReuse && (state.session?.responses ?? []).find((r) => r.answer &&
+        [r.question, ...(r.aliases ?? [])].some((q) => key(q) === question));
+      return exact ? { status: "fill", key: "saved-answer", value: exact.answer, rule, source: "saved" }
+        : { status: "skipped", key: rule.key };
+    }
+    if (rule?.profileFirst && profileAnswers) {
+      return { status: "fill", key: rule.key, value: profileValue, rule, source: "profile" };
+    }
     if (saved?.answer && !profileOnly && !protectedIdentity) {
       return { status: "fill", key: "saved-answer", value: saved.answer, rule, source: "saved" };
     }
@@ -1646,15 +1599,8 @@
        * A field whose only legitimate source is the profile. If the profile
        * does not have it, it stays empty — no saved answer from a different
        * application, no generated sentence. See `experienceLocation`.
-       *
-       * `needsUser` is what tells the applicant that happened. Without it a
-       * required work-authorisation dropdown the profile could not answer was
-       * left blank *and* unmarked, so the only sign of it was Workday's own
-       * error on submit. The flag marks the field without adding it to
-       * `state.unmatched`, which is what feeds the model — these questions stay
-       * off limits to it whether or not the profile had an answer.
        */
-      if (rule.profileOnly) return { status: "skipped", key: rule.key, needsUser: true };
+      if (rule.profileOnly) return { status: "skipped", key: rule.key };
 
       // No profile value: a close saved answer is the next best source.
       if (saved?.answer) {
@@ -1732,14 +1678,9 @@
     /(voluntary\s+self[-\s]?identification|self[-\s]?identification\s+of\s+disability|form\s*cc-?305|cc-?305|section\s*503|omb\s*control\s*number\s*1250|voluntary\s+disclosure|equal\s+employment\s+opportunity|eeo)/i;
 
   function offLimitsToAi(field) {
-    if (field.rule?.identity || field.rule?.eeo || field.rule?.blank) return true;
-    // A rule that answers only from the profile has already decided this
-    // question has no safe generated answer.
-    if (field.rule?.profileOnly) return true;
-    const label = field.label || "";
-    if (SELF_ID_LABEL_RE.test(label)) return true;
-    if (LEGAL_STATUS_LABEL_RE.test(label)) return true;
-    if (UNKNOWABLE_HISTORY_RE.test(label)) return true;
+    if (field.rule?.identity || field.rule?.eeo || field.rule?.blank || field.rule?.profileOnly || field.rule?.key === "school") return true;
+    if (/\bsponsor|\bwork\s*authori[sz]|\bauthori[sz]\w*\b.{0,50}\bwork\b|\bvisa\b/i.test(field.label || "")) return true;
+    if (SELF_ID_LABEL_RE.test(field.label || "")) return true;
     try {
       const section = M.visibleText(field.el.closest("fieldset, section, [role='group']"));
       if (section && SELF_ID_LABEL_RE.test(section)) return true;
@@ -2039,10 +1980,6 @@
         if (plan.status === "unmatched") {
           state.unmatched.push(field);
           mark(field.el);
-        } else if (plan.needsUser) {
-          // Deliberately not added to state.unmatched: marked for the applicant,
-          // but never offered to the model.
-          mark(field.el);
         }
       }
 
@@ -2074,11 +2011,7 @@
           if (plan.key) result.keys.push(plan.key);
           field.el.classList.remove("zapply-needs-you");
           flash(field.el);
-          // Answers Zapply chose rather than read from the profile stay visibly
-          // different, so the applicant reads them before submitting.
-          if (plan.source === "decline" || plan.source === "asserted") {
-            field.el.classList.add("zapply-drafted");
-          }
+          if (plan.source === "decline") field.el.classList.add("zapply-drafted");
         } else if (!failed.includes(field)) {
           failed.push(field);
         }
@@ -2106,8 +2039,6 @@
             await write(field, { allowDefer: false });
           } else if (plan.status === "unmatched" && !state.unmatched.includes(field)) {
             state.unmatched.push(field);
-            mark(field.el);
-          } else if (plan.needsUser) {
             mark(field.el);
           }
         }
