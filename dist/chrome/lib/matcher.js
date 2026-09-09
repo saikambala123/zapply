@@ -521,7 +521,22 @@
       // "a bare Date, but only inside a Voluntary Self-Identification block" —
       // a condition no single pattern in `match` can express, because those are
       // OR'd against each description separately.
-      if (rule.require && !rule.require.test(label)) continue;
+      //
+      // A predicate form exists for the case the regex form cannot reach: the
+      // Workday CC-305 page renders its heading far enough from the three boxes
+      // that `deriveLabel` never picks it up, so the derived label for the Date
+      // box is the bare word "Date" and a label-only `require` can never fire.
+      // A predicate is handed the element as well and can walk the DOM for the
+      // block it belongs to. See `inSelfIdBlock` in the rule table.
+      if (rule.require) {
+        let required = false;
+        try {
+          required = typeof rule.require === "function"
+            ? Boolean(rule.require(label, el))
+            : rule.require.test(label);
+        } catch { required = false; }
+        if (!required) continue;
+      }
 
       /**
        * Where the match landed decides how much it counts.
@@ -2316,13 +2331,42 @@
     return hints;
   }
 
+  /**
+   * Category names that are never a final answer to "How did you hear about
+   * us?" — they are the heading the real source hides under.
+   *
+   * Workday's hierarchical prompt renders every level as an identical
+   * `[data-automation-id="promptOption"]` row: no chevron, no aria-haspopup, no
+   * aria-expanded, and clicking one *replaces* the list rather than expanding
+   * it. Nothing structural distinguishes "Social Media" from "LinkedIn", so
+   * `isParentOption` returned false for the whole menu, `drillForOption` found
+   * no parents to open, and the fill settled for the category — which on the
+   * Dana-Farber tenant meant the field was left empty because "Social Media"
+   * alone is not an accepted value.
+   *
+   * Recognising them by name is the only signal the markup actually offers.
+   */
+  const CATEGORY_NAME_RE =
+    /^(social\s*media|social\s*network(ing)?s?|job\s*board(s)?|job\s*site(s)?|professional\s*network(ing)?s?|online|internet|web(site)?s?|advertisement|advertising|media|print|referrals?|employee\s*referrals?|events?|career\s*fairs?|job\s*fairs?|conferences?|schools?|universit(y|ies)|colleges?|campus|agenc(y|ies)|recruiters?|search\s*firms?|other\s*sources?|sourcing|direct\s*sourcing)$/i;
+
+  function looksLikeCategoryName(option) {
+    const text = normalizeChoiceText(
+      option?.textContent || option?.getAttribute?.("aria-label") || option?.getAttribute?.("data-automation-label") || ""
+    );
+    return Boolean(text) && CATEGORY_NAME_RE.test(text);
+  }
+
   function isParentOption(option) {
     if (!option) return false;
     if (option.getAttribute("aria-haspopup")) return true;
     if (option.getAttribute("aria-expanded") !== null) return true;
+    if (option.getAttribute("role") === "treeitem") return true;
     if (/submenu|has-children|expandable|parent/i.test(option.className || "")) return true;
     if (option.querySelector('[class*="chevron"], [class*="arrow"], [class*="caret"], svg')) return true;
     if (/[›»>❯]\s*$/.test(clean(option.textContent))) return true;
+    // Last resort, and the one that carries Workday: the row is named after a
+    // category rather than a source.
+    if (looksLikeCategoryName(option)) return true;
     return false;
   }
 
@@ -2353,7 +2397,27 @@
     );
   }
 
-  async function drillForOption(session, topOptions, targets, rawValue, waitMs, hint, depth = 0) {
+  /** The set of option texts currently on screen, so a replaced list is detectable. */
+  function optionSignature(list) {
+    return list.map((o) => normalizeChoiceText(o.textContent || "")).filter(Boolean).sort().join("\u0001");
+  }
+
+  /**
+   * Walk into category menus looking for the value itself.
+   *
+   * Two behaviours have to be supported. A classic submenu *appends* its
+   * children to the list; Workday *replaces* the list wholesale and offers a
+   * "back" affordance. The old implementation only understood the first: it
+   * compared option counts, and on Workday the count changes for the wrong
+   * reason (a different number of children), so a replaced list looked like a
+   * successful expansion of the same level and the leaves it then scored were
+   * whatever happened to be showing.
+   *
+   * Comparing the option *text* instead makes both cases legible, and a
+   * category that turns out not to contain the answer is now backed out of so
+   * the next one can be tried.
+   */
+  async function drillForOption(session, topOptions, targets, rawValue, waitMs, hint, depth = 0, primaryCount) {
     if (depth > 1) return null;
 
     const hints = categoryHintsFor(rawValue);
@@ -2366,32 +2430,50 @@
     for (const { option } of parents) {
       if (!document.contains(option)) continue;
       const parentText = normalizeChoiceText(option.textContent || "");
-      const beforeCount = menuOptions(session).length;
+      const before = menuOptions(session);
+      const beforeSignature = optionSignature(before);
 
       try { option.scrollIntoView?.({ block: "nearest" }); } catch {}
       try { option.click?.(); } catch {}
-      await wait(120);
+      await wait(150);
 
       let children = menuOptions(session);
-      if (children.length === beforeCount) {
+      if (optionSignature(children) === beforeSignature) {
+        // Nothing moved. Some trees only open on a keyboard right-arrow.
         try {
           option.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }));
         } catch {}
-        await wait(200);
+        await wait(220);
         children = menuOptions(session);
       }
+      if (optionSignature(children) === beforeSignature) continue;   // a leaf after all
 
-      const leaves = children.filter((child) => normalizeChoiceText(child.textContent || "") !== parentText);
+      const leaves = children.filter((child) => {
+        const text = normalizeChoiceText(child.textContent || "");
+        // The parent itself is often repeated as a breadcrumb at the top of the
+        // replaced list, and "Back" is navigation rather than an answer.
+        return text && text !== parentText && !/^(back|‹\s*back|←\s*back)$/i.test(text);
+      });
 
       let bestChild = null, bestChildScore = 0;
       for (const child of leaves) {
-        const score = optionScoreForTarget(child, targets, hint);
+        const score = optionScoreForTarget(child, targets, hint, primaryCount);
         if (score > bestChildScore) { bestChildScore = score; bestChild = child; }
       }
       if (bestChild && bestChildScore >= 55) return { option: bestChild, score: bestChildScore };
 
-      const deeper = await drillForOption(session, leaves, targets, rawValue, waitMs, hint, depth + 1);
+      const deeper = await drillForOption(session, leaves, targets, rawValue, waitMs, hint, depth + 1, primaryCount);
       if (deeper) return deeper;
+
+      // This category does not hold the answer. Step back out so the next
+      // category is opened from the top level rather than from inside this one.
+      const backButton = (MENU.popup || document).querySelector?.(
+        '[data-automation-id*="backButton" i], [aria-label*="back" i], button[title*="back" i]'
+      );
+      if (backButton) {
+        try { backButton.click?.(); } catch {}
+        await wait(160);
+      }
     }
 
     return null;
@@ -2449,6 +2531,16 @@
       return { best, bestScore };
     };
 
+    /** The best hit on the answer *itself*, ignoring the categories it maps onto. */
+    const pickPrimary = (list) => {
+      let score = 0;
+      for (const opt of list) {
+        const s = optionScoreForTarget(opt, targets.slice(0, primaryCount), hint, primaryCount);
+        if (s > score) score = s;
+      }
+      return score;
+    };
+
     let { best, bestScore } = pick(options);
 
     // Long lists (country, state, school) are virtualised — only the first
@@ -2481,9 +2573,31 @@
       }
     }
 
-    if (!best || bestScore < 55) {
-      const drilled = await drillForOption(session, options, targets, value, waitMs, hint);
-      if (drilled) { best = drilled.option; bestScore = drilled.score; }
+    /**
+     * A category is not the answer when the answer is one level inside it.
+     *
+     * The drill used to run only after everything else had failed — but on a
+     * hierarchical menu nothing fails: a rule that maps "LinkedIn" onto
+     * "Social Media" and "Job Board" for the portals that only offer
+     * categories means the top level always produces a confident synonym hit.
+     * "Social Media" scored ~98, comfortably over the 55 floor, so the drill
+     * never ran and the fill either committed a category the tenant does not
+     * accept as a final value or committed nothing at all. This is Workday's
+     * "How Did You Hear About Us?" left empty.
+     *
+     * So: if nothing matched the *actual* value at the top level, look inside
+     * the categories first. The category match is kept as the fallback, which
+     * preserves the portals that genuinely only offer one.
+     */
+    const primaryTop = pickPrimary(options);
+    if (primaryTop < 100 || !best || bestScore < 55) {
+      const drilled = await drillForOption(session, options, targets, value, waitMs, hint, 0, primaryCount);
+      // A leaf naming the answer outright beats any category, whatever the
+      // category scored on the synonym ladder.
+      if (drilled && (!best || bestScore < 55 || drilled.score >= 100)) {
+        best = drilled.option;
+        bestScore = drilled.score;
+      }
     }
 
     if (!best || bestScore < 55) {
@@ -2548,6 +2662,89 @@
       (shown && (shown === bestText || shown === wantNorm)) ||
       (chosenText && (chosenText === bestText || chosenText.includes(bestText)))
     );
+  }
+
+  /**
+   * A search prompt that accepts a value it has never heard of.
+   *
+   * Workday's "School or University" is a combobox by every structural signal —
+   * `role="combobox"`, a listbox popup, the ☰ prompt icon — so `fieldKind`
+   * reports "select" and `setComboboxValue` drives it. That is right up to the
+   * point where the applicant's school is not in the tenant's list, which is
+   * the normal case: the search returns "No results found", no option scores
+   * above the floor, and the field is left empty. The applicant then sees a
+   * required box Zapply skipped, with their school sitting in their profile.
+   *
+   * These prompts do take free text — they just need it typed and committed
+   * with Enter rather than assigned, exactly like the required text boxes in
+   * `setTextValue`. A matching suggestion is still preferred when one appears,
+   * because picking the tenant's own record is worth more than a string that
+   * merely looks the same.
+   *
+   * Returns false without touching anything if the control turns out to be a
+   * fixed-choice menu, so a Degree or Country picker can never acquire an
+   * invented value this way.
+   */
+  async function setTypeaheadValue(el, value, waitMs = 900, hint) {
+    const text = String(value ?? "").trim();
+    if (!el || !text) return false;
+
+    // A widget backed by a real <select> has a closed set of answers. Free text
+    // is meaningless there and must not be attempted.
+    const backing = backingSelect(el);
+    if (backing && backing !== el && hasRealOptions(backing)) return false;
+
+    // The thing we can type into: either the control itself, or the search box
+    // its popup renders.
+    const isTextEntry = el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable;
+    const opened = await openMenu(el, waitMs);
+    const session = { el, baseline: opened.baseline };
+    const box = isTextEntry ? el : findSearchInput(el, MENU.popup, MENU.baselineInputs);
+    if (!box) { await closeOpenMenu(); return false; }
+
+    setComboboxText(box, "");
+    await wait(50);
+    setComboboxText(box, text);
+    await wait(Math.min(600, Math.max(260, waitMs / 2)));
+
+    // A suggestion that is genuinely this school wins over the raw string.
+    const suggestions = menuOptions(session).filter(
+      (o) => !isPlaceholderChoice(o.textContent || "") && !/no results|no matches/i.test(clean(o.textContent))
+    );
+    let chosen = null, chosenScore = 0;
+    for (const option of suggestions) {
+      const score = optionScoreForTarget(option, [text], hint, 1);
+      if (score > chosenScore) { chosenScore = score; chosen = option; }
+    }
+
+    if (chosen && chosenScore >= 100) {
+      try { chosen.scrollIntoView?.({ block: "nearest" }); } catch {}
+      try { fire(chosen, "pointerdown", "mousedown", "pointerup", "mouseup"); } catch {}
+      try { chosen.click?.(); } catch {}
+      await wait(120);
+    } else {
+      // Commit the typed text. Enter is what these prompts listen for, and it
+      // is safe here because the menu is demonstrably open — the guard that
+      // matters, since Enter on a *closed* Workday control submits the page.
+      if (menusOpen()) {
+        for (const type of ["keydown", "keypress", "keyup"]) {
+          try {
+            box.dispatchEvent(new KeyboardEvent(type, {
+              key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true,
+            }));
+          } catch {}
+        }
+        await wait(180);
+      }
+    }
+
+    await closeOpenMenu();
+    fire(el, "change");
+    await wait(60);
+
+    const shown = normalizeChoiceText(comboboxDisplayValue(el) || (isTextEntry ? el.value : ""));
+    const want = normalizeChoiceText(text);
+    return Boolean(shown && (shown === want || shown.includes(want) || want.includes(shown)));
   }
 
   /* ------------------------------------------------------------------ */
@@ -3208,6 +3405,7 @@
     setRadioValue,
     setCheckboxValue,
     setComboboxValue,
+    setTypeaheadValue,
     comboboxDisplayValue,
     readComboboxOptions,
     visibleOptions,

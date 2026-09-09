@@ -204,11 +204,30 @@ async function pushQueue() {
     // with responsesSaved=0 when the question was rejected by validation. That
     // made the answer disappear from Pending while never reaching Saved Answers.
     const reported = Array.isArray(res.data?.savedKeys) ? res.data.savedKeys : null;
+    /**
+     * Answers the server has looked at and will never accept.
+     *
+     * `/api/extension/sync` drops anything that fails `isRealQuestion` — a
+     * capture artefact, a bare option label, a string too short to be a
+     * question — and names them in `rejectedKeys`. This code ignored that
+     * field, so those entries were never confirmed and never removed: they sat
+     * in `pendingResponses` for good. Once the queue held nothing else, every
+     * press of Sync now uploaded them, had them rejected, counted zero
+     * confirmed, and reported "Sync failed — retry" for ever. That is the
+     * reported broken Sync button, and it also blocked the pull half from being
+     * reported even when it had succeeded.
+     *
+     * Re-offering them cannot change the answer, so they are dropped.
+     */
+    const rejected = new Set(Array.isArray(res.data?.rejectedKeys) ? res.data.rejectedKeys : []);
     const { pendingResponses: now } = await store.get("pendingResponses");
     let remaining;
     if (reported) {
       const confirmed = new Set(reported);
-      remaining = (now ?? []).filter((r) => !confirmed.has(queueKey(r.question)));
+      remaining = (now ?? []).filter((r) => {
+        const key = queueKey(r.question);
+        return !confirmed.has(key) && !rejected.has(key);
+      });
     } else if ((res.data?.responsesSaved ?? 0) >= responses.length) {
       /**
        * A server that does not say *which* answers it wrote.
@@ -230,13 +249,26 @@ async function pushQueue() {
     else await store.remove(["pendingResponses"]);
   }
   // The server reports what it actually wrote; the local count is only what we
-  // offered it. A response with zero confirmed keys is not a successful sync.
+  // offered it.
   const confirmedCount = res.ok ? (res.data?.responsesSaved ?? 0) : 0;
+  const rejectedCount = res.ok && Array.isArray(res.data?.rejectedKeys) ? res.data.rejectedKeys.length : 0;
+
+  /**
+   * A batch the server has fully dealt with is a successful sync.
+   *
+   * Requiring `confirmedCount > 0` treated "everything you sent was a capture
+   * artefact I have now discarded" as a failure — which it is not, and which
+   * the applicant could do nothing about. Failure is now only what it should
+   * be: the request did not succeed, or the server took none of the batch and
+   * rejected none of it either, which means something is genuinely wrong.
+   */
+  const handled = confirmedCount > 0 || rejectedCount > 0 || responses.length === 0;
   return {
     ...res,
-    ok: res.ok && (confirmedCount > 0 || responses.length === 0),
+    ok: res.ok && handled,
     pushed: confirmedCount,
-    error: res.ok && responses.length && confirmedCount === 0
+    discarded: rejectedCount,
+    error: res.ok && !handled
       ? "Zapply could not save these answers. They remain pending; review the question and try Sync again."
       : res.error,
   };
@@ -621,15 +653,33 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
         if (pushed.ok && session) await refreshBadge();
         else setBadge("!", "#E5484D");
 
-        if (!pushed.ok) return respond({ ok: false, error: pushed.error });
-        if (!session) return respond({ ok: false, error: "Couldn't reach Zapply to load your saved answers." });
+        /**
+         * The pull is reported even when the push failed.
+         *
+         * Returning early on a push failure threw away a completed download:
+         * answers the applicant had typed into the dashboard were fetched,
+         * cached and ready to use, and the popup was told only "Sync failed".
+         * The two halves succeed independently and are now reported that way,
+         * so a stuck upload never hides a working download.
+         */
+        if (!session) {
+          return respond({
+            ok: false,
+            error: pushed.ok
+              ? "Couldn't reach Zapply to load your saved answers."
+              : pushed.error,
+          });
+        }
 
         return respond({
           ok: true,
           data: {
             // What the server confirmed it wrote, not what we handed it.
             responsesSaved: pushed.pushed ?? 0,
+            discarded: pushed.discarded ?? 0,
             savedAnswers: pulled,
+            pushFailed: !pushed.ok,
+            pushError: pushed.ok ? null : pushed.error,
             syncedAt: session.syncedAt ?? new Date().toISOString(),
           },
         });

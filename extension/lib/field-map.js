@@ -334,20 +334,70 @@
   };
 
   /**
+   * Whatever the control says about the shape of date it wants.
+   *
+   * The placeholder is the usual carrier ("MM/DD/YYYY"), but Workday puts the
+   * pattern in `aria-label` on the segmented widget and some portals only print
+   * it as text beside the box. The wrapper's own text is read too, capped short
+   * so a paragraph of instructions can never be mistaken for a format.
+   */
+  const dateHintText = (el) => {
+    const parts = [
+      el?.getAttribute?.("placeholder"),
+      el?.getAttribute?.("aria-label"),
+      el?.getAttribute?.("data-format"),
+      el?.getAttribute?.("data-date-format"),
+      el?.getAttribute?.("title"),
+      el?.getAttribute?.("pattern"),
+    ];
+    try {
+      const wrapper = el?.parentElement;
+      const text = String(wrapper?.textContent ?? "").trim();
+      if (text && text.length <= 60) parts.push(text);
+    } catch {}
+    return parts.filter(Boolean).join(" ");
+  };
+
+  /** "MM/DD/YYYY", "DD-MM-YYYY", "YYYY-MM-DD", "MM/YYYY" — order and separator. */
+  const DATE_PATTERN_RE =
+    /(?:^|[^a-z])(y{2,4}|m{1,2}|d{1,2})\s*([./-])\s*(y{2,4}|m{1,2}|d{1,2})(?:\s*([./-])\s*(y{2,4}|m{1,2}|d{1,2}))?(?![a-z])/i;
+
+  /**
    * Today, in the format the control actually accepts.
    *
-   * A native <input type="date"> only takes YYYY-MM-DD; everything else on a
-   * US application expects MM/DD/YYYY. Shared by `todayDate` and `selfIdDate`
-   * so the two can never drift apart.
+   * A native <input type="date"> only takes YYYY-MM-DD. Everything else used to
+   * get MM/DD/YYYY regardless of what it asked for, which is wrong twice over:
+   * a box whose placeholder reads MM-DD-YYYY rejects slashes outright on the
+   * portals that validate the separator, and a non-US tenant asking for
+   * DD/MM/YYYY silently recorded the wrong day for the first twelve days of any
+   * month. The format is now read off the control and only falls back to US
+   * order when the control says nothing at all.
+   *
+   * Shared by `todayDate` and `selfIdDate` so the two can never drift apart.
    */
   const todayFor = (el) => {
     const now = new Date();
-    const yyyy = now.getFullYear();
+    const yyyy = String(now.getFullYear());
     const mm = String(now.getMonth() + 1).padStart(2, "0");
     const dd = String(now.getDate()).padStart(2, "0");
+
     const type = (el?.getAttribute?.("type") || el?.type || "").toLowerCase();
     if (type === "date") return `${yyyy}-${mm}-${dd}`;
     if (type === "month") return `${yyyy}-${mm}`;
+
+    const found = DATE_PATTERN_RE.exec(dateHintText(el));
+    if (found) {
+      const separator = found[2];
+      const order = [found[1], found[3], found[5]]
+        .filter(Boolean)
+        .map((token) => token[0].toLowerCase());
+      const value = { m: mm, d: dd, y: yyyy };
+      const parts = order.map((key) => value[key]).filter(Boolean);
+      // Only trust a pattern that named at least two distinct parts.
+      if (parts.length >= 2 && new Set(order).size === order.length) {
+        return parts.join(separator);
+      }
+    }
     return `${mm}/${dd}/${yyyy}`;
   };
 
@@ -490,8 +540,29 @@
     return SETTLED_STATUS.test(status) ? "No" : null;
   };
 
+  /**
+   * "…without sponsorship", however the portal qualifies the word.
+   *
+   * The alternation used to name the four qualifiers we had seen, so "without
+   * *company* sponsorship" and "without *employer* sponsorship" — both common —
+   * fell straight through and the answer was written uninverted: an applicant
+   * who needs no sponsorship told the employer they could not work without it.
+   * Any run of qualifier words is now accepted, which is what the phrase
+   * actually looks like in the wild.
+   */
   const SPONSORSHIP_INVERTED =
-    /\bwithout\s+(?:the\s+need\s+for\s+)?(?:any\s+)?(?:a\s+)?(?:visa\s+|employment\s+|work\s+|immigration\s+)?sponsor/i;
+    /\bwithout\s+(?:the\s+need\s+(?:for|of)\s+)?(?:requiring\s+)?(?:any\s+|a\s+|an\s+)?(?:[a-z]+\s+){0,3}?sponsor/i;
+
+  /**
+   * Anything that is a declaration about the right to work.
+   *
+   * Used as a floor, not as a matcher: a field whose label looks like this is
+   * never answered from saved answers or by the model, whichever specific rule
+   * did or did not claim it. A wrong answer here is disqualifying and, on a
+   * signed application, false.
+   */
+  const LEGAL_STATUS_RE =
+    /\b(sponsor\w*|visa|work\s*permit|immigration|right\s*to\s*work|authoriz\w*\s*to\s*work|authoris\w*\s*to\s*work|work\s*authoriz\w*|work\s*authoris\w*|legally\s*(?:authoriz|authoris|entitled|permitted|eligible)\w*|employment\s*eligib\w*|h-?1b|opt\b|cpt\b|ead\b|green\s*card|permanent\s*resident)\b/i;
 
   /**
    * The voluntary self-identification block — CC-305 and its equivalents.
@@ -520,7 +591,52 @@
   const denyOwn = (re) => (label) => re.test(ownLabel(label));
 
   const SELF_ID_RE =
-    /(voluntary\s+self[-\s]?identification|self[-\s]?identification\s+of\s+disability|form\s*cc-?305|cc-?305|section\s*503|omb\s*control\s*number\s*1250|voluntary\s+disclosure)/i;
+    /(voluntary\s+self[-\s]?identification|self[-\s]?identification\s+of\s+disability|form\s*cc-?305|cc-?305|section\s*503|omb\s*control\s*number\s*1250|omb\s*control\s*number|voluntary\s+disclosure|why\s+are\s+you\s+being\s+asked\s+to\s+complete\s+this\s+form|reasonable\s+accommodation\s+notice|public\s+burden\s+statement|disability\s+self[-\s]?identification)/i;
+
+  /**
+   * Is this control inside a CC-305 / voluntary self-identification block?
+   *
+   * `deriveLabel` collects the field's own label, its group label and the
+   * nearest *owning* section heading — and on Workday's CC-305 page none of
+   * those reach the title. The three boxes sit in their own form-field
+   * wrappers; the words "Voluntary Self-Identification of Disability", "Form
+   * CC-305" and "OMB Control Number 1250-0005" are rendered as separate blocks
+   * several levels above, past the point where `ownsOnlyThisField` stops
+   * walking. The derived label for the Date box is therefore the bare word
+   * "Date", the `require` never fired, and the box was left empty — which is
+   * the reported bug. The Name box failed the same way and for the same reason.
+   *
+   * Walking up for the block's own text is the reliable signal. The search is
+   * bounded: twelve ancestors, and only text short enough to be a form header
+   * rather than the whole page.
+   */
+  const inSelfIdBlock = (el) => {
+    if (!el?.closest) return false;
+    try {
+      // The fastest positive: Workday names the wrapper itself.
+      const named = el.closest(
+        '[data-automation-id*="selfIdentification" i], [data-automation-id*="disability" i], ' +
+        '[data-automation-id*="voluntaryDisclosure" i], [id*="selfIdentification" i]'
+      );
+      if (named) return true;
+    } catch {}
+
+    try {
+      let node = el.parentElement;
+      for (let depth = 0; node && depth < 12; depth++, node = node.parentElement) {
+        if (node === document.body || node === document.documentElement) break;
+        const text = String(node.textContent ?? "");
+        // A whole page of text is not a section header. The CC-305 preamble
+        // itself is well under this.
+        if (text.length > 4000) break;
+        if (SELF_ID_RE.test(text)) return true;
+      }
+    } catch {}
+    return false;
+  };
+
+  /** Label says so, or the DOM does. */
+  const requireSelfId = (label, el) => SELF_ID_RE.test(String(label ?? "")) || inSelfIdBlock(el);
 
   const RULES = [
     /* ---------------- Voluntary self-identification (CC-305) ----------------
@@ -538,7 +654,7 @@
       key: "selfIdName",
       // Above fullName (6) and signature (8) so the section-aware rule wins.
       weight: 19,
-      require: SELF_ID_RE,
+      require: requireSelfId,
       match: [/^name$/i, /\byour\s*name\b/i, /\b(full|legal)\s*name\b/i, /\bname\b/i],
       deny: [
         THIRD_PARTY,
@@ -559,7 +675,7 @@
        */
       key: "selfIdDate",
       weight: 19,
-      require: SELF_ID_RE,
+      require: requireSelfId,
       match: [/^date$/i, /\bdate\b/i],
       deny: [
         THIRD_PARTY,
@@ -1227,9 +1343,60 @@
       key: "school",
       weight: 10,
       match: [/\b(school|university|college|institution)\b/i],
-      deny: [/high\s*school\s*only|graduated\b.*\?/i],
+      /**
+       * "Do you have a High School Diploma or GED?" is not a box to type a
+       * university into.
+       *
+       * It contains the word "School", so this rule claimed it, and the
+       * applicant's university name was written at a Yes/No dropdown on the
+       * Dana-Farber Workday form. The write could not succeed, so the field was
+       * reported as failed and then answered by whatever ran next.
+       *
+       * A question is denied here; only a field asking for the institution's
+       * name is answered.
+       */
+      deny: [
+        /high\s*school\s*only|graduated\b.*\?/i,
+        /\b(diploma|g\.?\s?e\.?\s?d\.?)\b/i,
+        /\bdo\s*you\s*(have|possess|hold|currently\s*attend)\b/i,
+        /\b(highest|level)\s*(level\s*)?of\s*(education|school)/i,
+      ],
       type: ["text", "select"],
+      // A school name is open text. When the portal dresses the box up as a
+      // searchable prompt whose list does not contain it, the value is typed
+      // and committed rather than abandoned.
+      freeText: true,
       value: (p, _el, _label, index) => latestSchool(p, index).school,
+    },
+    {
+      /**
+       * "Do you have a High School Diploma or GED?"
+       *
+       * Left to the model this was answered "Yes" with no basis, which is a
+       * guess about a credential. It is derivable instead: a profile holding
+       * any completed post-secondary qualification necessarily implies
+       * secondary education, and a profile holding nothing answers nothing.
+       */
+      key: "highSchoolDiploma",
+      weight: 14,
+      match: [
+        /\b(high\s*school\s*(diploma|degree)|g\.?\s?e\.?\s?d\.?|secondary\s*school\s*(diploma|certificate)|hsd\b)/i,
+      ],
+      deny: [THIRD_PARTY],
+      type: ["select", "radio"],
+      profileOnly: true,
+      value: (p) => {
+        const list = p?.education ?? [];
+        const HIGHER =
+          /\b(bachelor|master|doctor|phd|associate|diploma|degree|b\.?s\.?|b\.?a\.?|m\.?s\.?|m\.?a\.?|mba|b\.?tech|m\.?tech|engineering)\b/i;
+        const hasHigher = list.some((e) => HIGHER.test(`${e?.degree ?? ""} ${e?.fieldOfStudy ?? ""}`));
+        const hasSecondary = list.some((e) =>
+          /\b(high\s*school|secondary|intermediate|10\+2|12th|hsc|ssc|matric\w*|g\.?\s?e\.?\s?d\.?)\b/i
+            .test(`${e?.school ?? ""} ${e?.degree ?? ""}`)
+        );
+        return hasHigher || hasSecondary ? "Yes" : null;
+      },
+      options: { Yes: ["yes", "i do", "true"], No: ["no", "i do not", "i don't", "false"] },
     },
     {
       key: "degree",
@@ -1244,6 +1411,7 @@
       weight: 11,
       match: [/\b(field\s*of\s*study|major|discipline|concentration|area\s*of\s*study)\b/i],
       type: ["text", "select"],
+      freeText: true,
       value: (p, _el, _label, index) => latestSchool(p, index).fieldOfStudy,
     },
     {
@@ -1379,11 +1547,31 @@
     {
       key: "requireSponsorship",
       weight: 13,
+      /**
+       * Four phrasings used to reach no rule at all.
+       *
+       *   "Are you legally authorized to work in the US without sponsorship?"
+       *   "Are you legally authorized to work in the U.S. without company
+       *    sponsorship?"
+       *   "Visa Sponsorship Required?"
+       *   "Sponsorship Required"
+       *
+       * `authorizedToWork` denies on /sponsor/ — correctly, because a combined
+       * question needs the inverting answer this rule produces — and none of
+       * these matched here, so all four fell through to saved answers and then
+       * to the model. That is the wrong-answer path the applicant reported.
+       *
+       * The two label-style ones failed on `\b(require|need)\b` alone: the word
+       * on the page is "Required", and \brequire\b does not match inside it.
+       */
       match: [
-        /\b(require|need|seek)\w*\s*(visa\s*)?sponsor/i,
-        /\bsponsorship\b.*\b(now|future|require|need)\b/i,
-        /\bwill\s*you\s*.*sponsorship\b/i,
-        /\bimmigration\s*sponsorship\b/i,
+        /\b(require|need|seek|request)\w*\s*(a\s*)?(visa\s*|work\s*|employment\s*|employer\s*|company\s*|immigration\s*)*sponsor/i,
+        /\bsponsor\w*\b.*\b(now|future|requir|need|necessar)\w*/i,
+        /\b(will|do|would|are)\s*you\b.*\bsponsor/i,
+        /\b(visa|employment|work|immigration|employer|company)?\s*sponsor\w*\s*(is\s*)?(required|needed|necessary)\b/i,
+        /\bimmigration\s*sponsor\w*/i,
+        /\bwithout\s+(?:the\s+need\s+(?:for|of)\s+)?(?:[a-z]+\s+){0,3}?sponsor/i,
+        /\bsponsorship\s*(status|requirement)\b/i,
       ],
       type: ["select", "radio", "text"],
       /**
@@ -1452,6 +1640,62 @@
        */
       profileOnly: true,
       value: (p) => W(p).workAuthType || W(p).visaStatus,
+    },
+    {
+      /**
+       * The floor under every work-eligibility question.
+       *
+       * The rules above cover the phrasings that exist today, and four that did
+       * not match any of them were being answered by the model. Portals invent
+       * new wording constantly, and the cost of the next miss is the same: a
+       * false declaration about immigration status on a signed application.
+       *
+       * This rule claims anything that is recognisably about the right to work
+       * and answers it *only* when the question can be classified with
+       * confidence. When it cannot, it returns null — and because the rule is
+       * `profileOnly`, that leaves the field blank and flagged for the
+       * applicant instead of open to saved answers and the model.
+       *
+       * Weight 3 so it can never outrank a specific rule; it exists to catch
+       * what they miss, not to compete with them.
+       */
+      key: "workEligibilityOther",
+      weight: 3,
+      match: [LEGAL_STATUS_RE],
+      // Questions about somebody else, and the document-upload prompts that
+      // mention the same vocabulary without asking anything.
+      // `\w*` on the stems, not a trailing `\b`: "expiry" and "denied" are the
+      // forms that actually appear, and `\bexpir\b` matches neither.
+      deny: [
+        THIRD_PARTY,
+        /\b(upload|attach|document|passport|expir\w*|issue\w*\s*date|den(y|ies|ied)|revok\w*|petition|receipt)\b/i,
+        /\bcopy\s*of\b/i,
+      ],
+      type: ["select", "radio", "text"],
+      profileOnly: true,
+      value: (p, _el, label) => {
+        const text = String(label ?? "");
+        const asksSponsorship = /\bsponsor/i.test(text);
+        const asksAuthorization = /\b(authoriz|authoris|eligib|entitled|permitted|right\s*to\s*work)/i.test(text);
+
+        if (asksSponsorship) {
+          const stored = sponsorshipFor(p);
+          if (!stored) return null;
+          if (!SPONSORSHIP_INVERTED.test(text)) return stored;
+          const requiresSponsorship = /^y/i.test(stored);
+          if (requiresSponsorship) return "No";
+          const authorized = authorizedFor(p);
+          if (asksAuthorization && authorized && !/^y/i.test(authorized)) return "No";
+          return "Yes";
+        }
+
+        if (asksAuthorization) return authorizedFor(p);
+
+        // Recognisably about immigration, but not a question this rule can read.
+        // Blank is the only safe answer.
+        return null;
+      },
+      options: { Yes: ["yes", "i am", "i do", "true"], No: ["no", "i am not", "i do not", "i don't", "false"] },
     },
     {
       key: "willingToRelocate",
@@ -1627,6 +1871,63 @@
       type: ["select", "radio"],
       value: (p) => W(p).willingToBackgroundCheck || null,  // never assumed: this is consent
       options: { Yes: ["yes", "agree", "consent", "true"], No: ["no", "do not", "decline", "false"] },
+    },
+
+    {
+      /**
+       * "I agree to the Terms … and our Privacy Policy."
+       *
+       * Nothing in the table matched these, so the box was never planned and
+       * Workday's Create Account step stopped with "Error: Please check the box
+       * to continue" under an otherwise complete form — email, password and
+       * confirmation all filled by Zapply. The applicant had to find the one
+       * unticked box themselves, every time.
+       *
+       * This is the only rule that asserts something on the applicant's behalf
+       * rather than reporting a fact from their profile, so it is deliberately
+       * the narrowest rule here and it answers to a setting the applicant
+       * controls (`acceptAgreements`, checked in planField).
+       *
+       * Scope: accepting terms, privacy notices, and confirming that what has
+       * been entered is accurate. Everything else that wears similar language
+       * is denied below — marketing opt-ins are not a condition of applying,
+       * consent to a background or drug check has its own profile-backed rule,
+       * and a voluntary disclosure is never ticked from a default.
+       */
+      key: "agreementConsent",
+      weight: 12,
+      match: [
+        /\bi\s*(agree|accept|consent|acknowledge|confirm|certify|understand)\b/i,
+        /\b(agree|accept)\s*to\s*(the\s*)?(terms|conditions|privacy|policy|policies|statement|notice|agreement)\b/i,
+        /\b(terms\s*(and|&)\s*conditions|terms\s*of\s*(use|service)|privacy\s*(policy|notice|statement)|data\s*(privacy|protection)\s*(policy|notice|statement))\b/i,
+        /\backnowledg\w*\s*(and\s*)?(accept|agree|receipt)\b/i,
+        /\b(certify|confirm|declare)\b.*\b(true|accurate|correct|complete)\b/i,
+        /\belectronic\s*signature\s*(consent|agreement)\b/i,
+      ],
+      deny: [
+        THIRD_PARTY,
+        // Not a condition of applying — and ticking it signs the applicant up
+        // for mail they did not ask for.
+        /\b(marketing|promotional|newsletter|subscribe|updates?\s*about|job\s*alerts?|contact\s*me\s*about|talent\s*(community|network)|future\s*(roles?|opportunit)|keep\s*me\s*(informed|posted)|opt[-\s]?in\s*to\s*receive|receive\s*(emails?|texts?|sms|communications?))\b/i,
+        // The inverse of consent. Never ticked from a default.
+        /\b(do\s*not|don'?t|decline|refuse|withdraw|revoke|opt[-\s]?out|disagree|object\s*to)\b/i,
+        // These have their own rules, answered from the profile because they
+        // are consent to something being done to the applicant.
+        /\b(background\s*(check|screening)|drug\s*(test|screen)|credit\s*check|criminal\s*(record|history)|medical\s*exam)\b/i,
+        // A voluntary disclosure is never answered from a default.
+        SELF_ID_RE,
+        /\b(disabilit|veteran|gender|race|ethnicit|hispanic|self[-\s]?identif)\w*/i,
+        // A question, not a consent box.
+        /\bhave\s*you\s*(ever|previously)\b/i,
+      ],
+      type: ["checkbox", "radio", "select"],
+      // Asserted rather than derived, so the planner marks it for review.
+      asserted: true,
+      value: () => "Yes",
+      options: {
+        Yes: ["yes", "i agree", "i accept", "i consent", "i acknowledge", "i confirm",
+              "i certify", "i understand", "agree", "accept", "acknowledged", "true", "checked"],
+      },
     },
 
     /* ---------------- Compensation ---------------- */

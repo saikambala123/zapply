@@ -1033,6 +1033,31 @@
    * tried separately — matching the whole joined string diluted the score badly
    * enough that saved answers routinely failed to apply.
    */
+  /**
+   * A declaration about the right to work.
+   *
+   * Kept here as well as in the rule table because the rule table can only
+   * protect a question it recognises. Four real phrasings matched no rule at
+   * all and were answered by the model — an inferred immigration status stated
+   * to an employer on a form the applicant signs. The floor has to sit below
+   * the matcher, not inside it.
+   */
+  const LEGAL_STATUS_LABEL_RE =
+    /\b(sponsor\w*|visa|work\s*permit|immigration|right\s*to\s*work|authoriz\w*\s*to\s*work|authoris\w*\s*to\s*work|work\s*authoriz\w*|work\s*authoris\w*|legally\s*(?:authoriz|authoris|entitled|permitted|eligible)\w*|employment\s*eligib\w*|h-?1b|green\s*card|permanent\s*resident|citizenship\s*status)\b/i;
+
+  /**
+   * A factual claim about the applicant's own history that no profile holds.
+   *
+   * "Have you ever, or are you currently participating in a student training
+   * program offered by Dana-Farber's Office of Workforce Development…" was
+   * answered "Yes". Nothing in the profile says anything about that programme,
+   * so the answer was invented — and it is a claim about the applicant's
+   * relationship with the employer they are applying to. There is no version of
+   * this the model can get right, only versions it happens not to get wrong.
+   */
+  const UNKNOWABLE_HISTORY_RE =
+    /\b(have\s*you\s*ever|have\s*you\s*previously|were\s*you\s*ever|are\s*you\s*(currently\s*)?(participating|enrolled|registered)|former\s*employee|previously\s*(employed|worked|applied)|currently\s*employed\s*by|related\s*to\s*(any|an)?\s*(current|former)?\s*employee|immediate\s*family\s*member|ever\s*(applied|worked|been\s*employed)|do\s*you\s*know\s*(anyone|someone)\s*(who\s*)?(works|working))\b/i;
+
   function findSavedAnswer(field) {
     const responses = state.session?.responses ?? [];
     if (!responses.length) return null;
@@ -1140,6 +1165,22 @@
         .test(String(field?.label ?? "").split("|")[0])) {
       return null;
     }
+
+    /**
+     * The same floor the model works under, applied to the queue.
+     *
+     * `authorizedToWork` and `requireSponsorship` are `profileOnly`, so
+     * planField already keeps saved answers away from them — but only when one
+     * of those rules matched. When none did, the field was open to any saved
+     * answer whose question looked similar, and "Yes" banked against one
+     * portal's sponsorship wording replays as "Yes" against another's
+     * *inverted* wording, which reverses the meaning. A stored answer cannot
+     * carry the direction of the question it was stored against, so these are
+     * answered from the profile or not at all.
+     */
+    const ownLabel = String(field?.label ?? "").split("|")[0];
+    if (LEGAL_STATUS_LABEL_RE.test(ownLabel)) return null;
+    if (UNKNOWABLE_HISTORY_RE.test(ownLabel)) return null;
 
     /**
      * For a disclosure question the saved answer has to reduce to a real
@@ -1374,6 +1415,25 @@
         ok = el.tagName === "SELECT"
           ? M.setSelectValue(el, value, rule?.options, field.label)
           : await M.setComboboxValue(el, value, quirks.dropdownDelay ?? 900, rule?.options, field.label);
+
+        /**
+         * A search prompt whose list does not contain the answer.
+         *
+         * Workday's "School or University" is a combobox by every structural
+         * signal, so it is driven as one — and the applicant's university is
+         * not in the tenant's list, so no option scores above the floor and the
+         * field is left empty beside a required marker. These prompts do take
+         * free text; it has to be typed and committed with Enter rather than
+         * picked. Only offered for values that are genuinely open — a school,
+         * an employer, a job title — never for a fixed-choice menu, which
+         * `setTypeaheadValue` refuses on its own by checking for a backing
+         * <select>.
+         */
+        if (!ok && el.tagName !== "SELECT" && rule?.freeText) {
+          try {
+            ok = await M.setTypeaheadValue(el, String(value), quirks.dropdownDelay ?? 900, field.label);
+          } catch { ok = false; }
+        }
       } else if (field.kind === "radio") {
         ok = M.setRadioValue(el, value, rule?.options, field.label);
       } else if (field.kind === "checkbox") {
@@ -1518,6 +1578,20 @@
     if (rule?.blank) return { status: "skipped", key: rule.key };
 
     /**
+     * An asserted answer: a consent box Zapply ticks on the applicant's behalf
+     * rather than a fact it reads from their profile. This is the one place the
+     * fill states something the applicant has not recorded anywhere, so it is
+     * the one place with a switch, and the write is always marked for review.
+     */
+    if (rule?.asserted) {
+      if (settings?.acceptAgreements === false) return { status: "skipped", key: rule.key };
+      let asserted = null;
+      try { asserted = rule.value(profile, el, label, field.index ?? 0); } catch { asserted = null; }
+      if (!asserted) return { status: "skipped", key: rule.key };
+      return { status: "fill", key: rule.key, value: asserted, rule, source: "asserted" };
+    }
+
+    /**
      * A saved answer to *this exact question* normally outranks a derived one —
      * it is the applicant's own wording. But not when the profile already
      * answers the field.
@@ -1572,8 +1646,15 @@
        * A field whose only legitimate source is the profile. If the profile
        * does not have it, it stays empty — no saved answer from a different
        * application, no generated sentence. See `experienceLocation`.
+       *
+       * `needsUser` is what tells the applicant that happened. Without it a
+       * required work-authorisation dropdown the profile could not answer was
+       * left blank *and* unmarked, so the only sign of it was Workday's own
+       * error on submit. The flag marks the field without adding it to
+       * `state.unmatched`, which is what feeds the model — these questions stay
+       * off limits to it whether or not the profile had an answer.
        */
-      if (rule.profileOnly) return { status: "skipped", key: rule.key };
+      if (rule.profileOnly) return { status: "skipped", key: rule.key, needsUser: true };
 
       // No profile value: a close saved answer is the next best source.
       if (saved?.answer) {
@@ -1652,7 +1733,13 @@
 
   function offLimitsToAi(field) {
     if (field.rule?.identity || field.rule?.eeo || field.rule?.blank) return true;
-    if (SELF_ID_LABEL_RE.test(field.label || "")) return true;
+    // A rule that answers only from the profile has already decided this
+    // question has no safe generated answer.
+    if (field.rule?.profileOnly) return true;
+    const label = field.label || "";
+    if (SELF_ID_LABEL_RE.test(label)) return true;
+    if (LEGAL_STATUS_LABEL_RE.test(label)) return true;
+    if (UNKNOWABLE_HISTORY_RE.test(label)) return true;
     try {
       const section = M.visibleText(field.el.closest("fieldset, section, [role='group']"));
       if (section && SELF_ID_LABEL_RE.test(section)) return true;
@@ -1952,6 +2039,10 @@
         if (plan.status === "unmatched") {
           state.unmatched.push(field);
           mark(field.el);
+        } else if (plan.needsUser) {
+          // Deliberately not added to state.unmatched: marked for the applicant,
+          // but never offered to the model.
+          mark(field.el);
         }
       }
 
@@ -1983,7 +2074,11 @@
           if (plan.key) result.keys.push(plan.key);
           field.el.classList.remove("zapply-needs-you");
           flash(field.el);
-          if (plan.source === "decline") field.el.classList.add("zapply-drafted");
+          // Answers Zapply chose rather than read from the profile stay visibly
+          // different, so the applicant reads them before submitting.
+          if (plan.source === "decline" || plan.source === "asserted") {
+            field.el.classList.add("zapply-drafted");
+          }
         } else if (!failed.includes(field)) {
           failed.push(field);
         }
@@ -2011,6 +2106,8 @@
             await write(field, { allowDefer: false });
           } else if (plan.status === "unmatched" && !state.unmatched.includes(field)) {
             state.unmatched.push(field);
+            mark(field.el);
+          } else if (plan.needsUser) {
             mark(field.el);
           }
         }

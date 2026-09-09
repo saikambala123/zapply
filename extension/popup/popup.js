@@ -23,6 +23,15 @@ const TOGGLES = [
   // is a draft the applicant has to read before submitting.
   ["aiAnswers", "Answer unknown questions with AI", false],
   ["overwriteExisting", "Replace answers already in the form", false],
+  // The only switch that governs Zapply asserting something rather than
+  // reporting a fact from the profile, so it is the one an applicant is most
+  // likely to come looking for. On by default: an unticked "I agree to the
+  // Terms" box stops Workday's Create Account step outright, which ends the
+  // application before it starts. Scoped in the rule table to terms, privacy
+  // notices and accuracy statements — marketing opt-ins, anything phrased as
+  // declining, and every voluntary disclosure are excluded there and cannot be
+  // reached from here.
+  ["acceptAgreements", "Tick \u201CI agree\u201D for terms and privacy notices", true],
   ["eeoFallbackDecline", "Answer EEO questions with “decline to self-identify”", false],
 ];
 
@@ -679,7 +688,12 @@ $("sync-btn").addEventListener("click", async () => {
   }
 
   $("sync-btn").disabled = false;
-  $("sync-btn").textContent = saved.ok ? "Sync now" : "Sync failed — retry";
+  // The two halves of a sync succeed independently. Reporting only the upload
+  // meant a download that had worked was announced as a failure, and the button
+  // sat on "Sync failed — retry" while the answers it had just fetched were
+  // sitting in the cache ready to use.
+  const pushFailed = Boolean(saved.data?.pushFailed);
+  $("sync-btn").textContent = saved.ok && !pushFailed ? "Sync now" : "Sync failed — retry";
   // A successful push empties the queue, so the count and the Clear button
   // have to be re-read here — including when the session pull above failed
   // and renderMain never ran.
@@ -687,10 +701,23 @@ $("sync-btn").addEventListener("click", async () => {
   if (saved.ok) {
     const pulled = saved.data?.savedAnswers ?? session?.responses?.length ?? 0;
     const pushed = saved.data?.responsesSaved ?? 0;
+    const discarded = saved.data?.discarded ?? 0;
+
+    // What the server did with the queue, in the order that matters to the
+    // applicant: what failed, then what was uploaded, then what was dropped.
+    const detail = pushFailed
+      ? (saved.data?.pushError || "Your answers downloaded, but the upload failed. Try Sync again.")
+      : [
+          pushed ? `${pushed} new answer${pushed === 1 ? "" : "s"} uploaded from this browser.` : null,
+          discarded
+            ? `${discarded} unusable entr${discarded === 1 ? "y" : "ies"} discarded.`
+            : null,
+        ].filter(Boolean).join(" ") || "Pulled from your dashboard.";
+
     setStatus(
-      "ready",
+      pushFailed ? "warn" : "ready",
       `${pulled} saved answer${pulled === 1 ? "" : "s"} ready`,
-      pushed ? `${pushed} new answer${pushed === 1 ? "" : "s"} uploaded from this browser.` : "Pulled from your dashboard."
+      detail
     );
   }
 });
