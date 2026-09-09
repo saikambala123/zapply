@@ -1,6 +1,6 @@
 {
   "name": "zapply",
-  "version": "1.13.11",
+  "version": "1.13.12",
   "private": true,
   "description": "Zapply \u2014 one-click job application autofill, tracking and AI answers.",
   "scripts": {

@@ -1,4 +1,4 @@
-Latest repair release: [Zapply 1.13.11 update and installation notes](UPDATE-1.13.11.md).
+Latest repair release: [Zapply 1.13.12 update and installation notes](UPDATE-1.13.12.md).
 
 # Zapply
 

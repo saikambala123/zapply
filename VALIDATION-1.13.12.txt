@@ -1,0 +1,35 @@
+Zapply 1.13.12 validation
+========================
+
+PASS  node --check extension/lib/field-map.js
+PASS  node --check extension/lib/matcher.js
+PASS  node --check extension/content/autofill.js
+PASS  node --check test/requested-fixes.spec.mjs
+
+PASS  test/requested-fixes.spec.mjs (11 regression groups)
+PASS  test/self-id.spec.mjs
+PASS  test/workday-fields.spec.mjs
+PASS  test/held-answers.spec.mjs
+PASS  test/background.spec.mjs (42/42 checks)
+PASS  test/date-regressions.spec.mjs (4/4 checks)
+PASS  test/row-index.spec.mjs
+PASS  test/ui-regressions.spec.mjs (14 checks)
+
+PASS  Chrome/Edge extension package created at dist/chrome
+PASS  Firefox extension package created at dist/firefox
+PASS  Packaged Chrome manifest version is 1.13.12
+PASS  Packaged Firefox manifest version is 1.13.12
+PASS  Packaged runtime files match the validated source files
+PASS  Packaged background default remains https://zapply.vercel.app
+
+Not executed locally
+--------------------
+- Playwright/browser suites: project dependencies are not installed in this
+  workspace.
+- Live employer Workday/Greenhouse/iCIMS tenants: no authenticated test tenant
+  was supplied.
+- Production portal + MongoDB integration: no production credentials were
+  supplied.
+
+These omissions do not affect the deterministic regression coverage above, but
+the applicant should always review the completed application before submitting.
