@@ -166,6 +166,29 @@ const nestedMenu = `
   check("nested menu selected LinkedIn", chosen, "LinkedIn");
   check("nested menu reported success", typeof ok, "boolean");
 
+  // LinkedIn must never be faked when the live menu does not offer it.
+  chosen = null;
+  menu.innerHTML = "";
+  const noLinkedIn = {
+    "Job Boards": null,
+    "Social Media": null,
+    "Other": null,
+  };
+  const renderFallback = () => {
+    menu.innerHTML = "";
+    for (const [name, children] of Object.entries(noLinkedIn)) {
+      const row = doc.createElement("div");
+      row.setAttribute("role", "option");
+      row.textContent = name;
+      row.addEventListener("click", () => { chosen = name; menu.innerHTML = ""; });
+      menu.appendChild(row);
+    }
+  };
+  button.addEventListener("click", renderFallback, { once: true });
+  const fallbackOk = await M.setComboboxValue(button, "LinkedIn", 400, undefined, "How did you hear about us?");
+  check("missing LinkedIn uses Social Media fallback", chosen, "Social Media");
+  check("missing LinkedIn fallback succeeds", fallbackOk, true);
+
   // A value that sits at the top level must still work.
   chosen = null;
   menu.innerHTML = "";

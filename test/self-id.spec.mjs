@@ -136,7 +136,7 @@ check("How did you hear canonical answer is LinkedIn", hearRule?.value(PROFILE),
 check("How did you hear falls back to Social Media", pick(["Select One", "Social Media", "Job Boards"], "LinkedIn", "How did you hear about us?", hearRule?.options), "Social Media");
 check("How did you hear falls back to Job Boards", pick(["Select One", "Job Boards"], "LinkedIn", "How did you hear about us?", hearRule?.options), "Job Boards");
 const schoolRule = M.matchRule(el("text"), "School or University", RULES);
-check("school is profile-only", !!schoolRule?.profileOnly, true);
+check("school can fall back to Saved Answers", !!schoolRule && schoolRule.profileOnly !== true, true);
 
 console.log("\napplication consent");
 const consentRule = M.matchRule(el("checkbox"), "I agree to the terms and conditions of this application.", RULES);

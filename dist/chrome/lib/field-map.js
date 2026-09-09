@@ -1229,7 +1229,7 @@
     /* ---------------- Education ---------------- */
     {
       key: "school",
-      profileOnly: true,
+      profileOnly: false,
       weight: 10,
       match: [/\b(school|university|college|institution)\b/i],
       deny: [/high\s*school\s*only|graduated\b.*\?/i],
@@ -1591,9 +1591,7 @@
         // Ordered most specific first. "Job board" used to outrank "social
         // media" and "professional network", so a list offering LinkedIn only
         // under one of those was answered with the wrong category.
-        LinkedIn: ["linkedin", "linked in", "professional network", "professional networking",
-                   "social media", "social network", "job board", "job boards", "job site",
-                   "online", "internet", "website"],
+        LinkedIn: ["linkedin", "linked in", "professional network", "professional networking"],
         Indeed: ["indeed", "job board", "job boards", "online", "internet", "job site"],
         Glassdoor: ["glassdoor", "job board", "job boards", "online"],
         Monster: ["monster", "job board", "job boards", "online"],

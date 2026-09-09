@@ -1549,7 +1549,8 @@
       /\b(work\s*authoriz|authorized\s+to\s+work|right\s+to\s+work|sponsor(?:ship|ed)|visa|immigration)\b/i
         .test(String(field?.label ?? "").split("|")[0]);
 
-    if (saved?.answer && !profileOnly && !protectedIdentity && !protectedLegal) {
+    const allowSavedForRule = !profileOnly || rule?.key === "school";
+    if (saved?.answer && allowSavedForRule && !protectedIdentity && !protectedLegal) {
       return { status: "fill", key: "saved-answer", value: saved.answer, rule, source: "saved" };
     }
 
@@ -1577,10 +1578,10 @@
        * does not have it, it stays empty — no saved answer from a different
        * application, no generated sentence. See `experienceLocation`.
        */
-      if (rule.profileOnly) return { status: "skipped", key: rule.key };
+      if (rule.profileOnly && rule.key !== "school") return { status: "skipped", key: rule.key };
 
       // No profile value: a close saved answer is the next best source.
-      if (saved?.answer) {
+      if (saved?.answer && (rule.key === "school" || !rule.profileOnly)) {
         return { status: "fill", key: "saved-answer", value: saved.answer, rule, source: "saved" };
       }
 

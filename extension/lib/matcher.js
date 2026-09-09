@@ -1481,6 +1481,36 @@
     const options = Array.from(el.options ?? []);
     if (!options.length) return false;
 
+    // How-did-you-hear is a canonical LinkedIn preference, but only when the
+    // actual list contains LinkedIn. Never map LinkedIn into an unrelated
+    // category merely because the category is present. The fallback is explicit
+    // and ordered: Social Media, then Job Boards.
+    const hearAbout = /how\s*did\s*you\s*(hear|find|learn)|source\s*of\s*(referral|application)|where\s*did\s*you\s*(hear|find)/i.test(String(hint || ""));
+    let forcedPick = null;
+    if (hearAbout && /^linked\s*in$/i.test(String(value).trim())) {
+      const rank = (text) => {
+        const t = normalizeChoiceText(text);
+        if (/\blinkedin\b|\blinked\s+in\b|professional\s+network/.test(t)) return 300;
+        if (/\bsocial\s+media\b/.test(t)) return 200;
+        if (/\bjob\s+boards?\b|\bjob\s+board\b/.test(t)) return 100;
+        return 0;
+      };
+      let chosen = null, chosenScore = 0;
+      for (const opt of options) {
+        const sc = rank(opt.textContent || opt.value || "");
+        if (sc > chosenScore) { chosen = opt; chosenScore = sc; }
+      }
+      if (!chosen) return false;
+      try {
+        const setter = nativeSetter(el);
+        if (setter) setter.call(el, chosen.value); else el.value = chosen.value;
+        if (el.value !== chosen.value) el.selectedIndex = chosen.index;
+      } catch { return false; }
+      notifyWidget(el);
+      try { el.blur?.(); } catch {}
+      return Boolean(el.options?.[el.selectedIndex]);
+    }
+
     const want = normalizeChoiceText(value);
     const rawWant = norm(value);
     const accepted = synonymsFor(synonyms, value).map(normalizeChoiceText).filter(Boolean);
@@ -2460,6 +2490,52 @@
     session.baseline = opened.baseline;
     let options = opened.options;
 
+    // How-did-you-hear fallback for custom Workday menus. LinkedIn is selected
+    // only when a LinkedIn leaf/category actually exists. Otherwise select the
+    // first available fallback category in the required order: Social Media,
+    // then Job Boards. This is deliberately resolved from live menu options,
+    // never from broad synonyms that could turn LinkedIn into a wrong category.
+    const hearAbout = /how\s*did\s*you\s*(hear|find|learn)|source\s*of\s*(referral|application)|where\s*did\s*you\s*(hear|find)/i.test(String(hint || ""));
+    if (hearAbout && /^linked\s*in$/i.test(String(value).trim())) {
+      const rank = (opt) => {
+        const t = normalizeChoiceText(opt.textContent || opt.getAttribute("aria-label") || opt.getAttribute("data-value") || "");
+        if (/\blinkedin\b|\blinked\s+in\b/.test(t)) return 300;
+        if (/\bprofessional\s+network/.test(t)) return 290;
+        if (/\bsocial\s+media\b/.test(t)) return 200;
+        if (/\bjob\s+boards?\b|\bjob\s+board\b/.test(t)) return 100;
+        return 0;
+      };
+      const pickFallback = (list) => {
+        let bestOpt = null, bestRank = 0;
+        for (const opt of list) { const r = rank(opt); if (r > bestRank) { bestOpt = opt; bestRank = r; } }
+        return { bestOpt, bestRank };
+      };
+      let picked = pickFallback(options);
+      if (!picked.bestOpt || picked.bestRank < 300) {
+        const searched = findSearchInput(el, MENU.popup, MENU.baselineInputs);
+        if (searched) {
+          setComboboxText(searched, "LinkedIn");
+          await wait(Math.min(500, Math.max(220, waitMs / 3)));
+          const filtered = menuOptions(session);
+          const retry = pickFallback(filtered);
+          if (retry.bestOpt) { picked = retry; options = filtered; }
+          else {
+            setComboboxText(searched, "Social Media");
+            await wait(Math.min(400, Math.max(180, waitMs / 3)));
+            const social = pickFallback(menuOptions(session));
+            if (social.bestOpt) { picked = social; options = menuOptions(session); }
+            else {
+              setComboboxText(searched, "Job Boards");
+              await wait(Math.min(400, Math.max(180, waitMs / 3)));
+              const boards = pickFallback(menuOptions(session));
+              if (boards.bestOpt) { picked = boards; options = menuOptions(session); }
+            }
+          }
+        }
+      }
+      if (picked.bestOpt) forcedPick = { best: picked.bestOpt, bestScore: picked.bestRank };
+    }
+
     const accepted = synonymsFor(synonyms, value);
     const targets = [String(value), want, ...accepted].filter(Boolean);
     const primaryCount = [String(value), want].filter(Boolean).length;
@@ -2473,7 +2549,7 @@
       return { best, bestScore };
     };
 
-    let { best, bestScore } = pick(options);
+    let { best, bestScore } = forcedPick ?? pick(options);
 
     // Long lists (country, state, school) are virtualised — only the first
     // rows exist in the DOM. Typing is the only way to reach the rest.
