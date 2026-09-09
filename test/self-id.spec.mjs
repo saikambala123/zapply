@@ -74,9 +74,9 @@ function makeSelect(texts) {
   });
   return node;
 }
-const pick = (texts, want, hint) => {
+const pick = (texts, want, hint, synonyms) => {
   const node = makeSelect(texts);
-  return M.setSelectValue(node, want, undefined, hint) ? node.options[node.selectedIndex].textContent : null;
+  return M.setSelectValue(node, want, synonyms, hint) ? node.options[node.selectedIndex].textContent : null;
 };
 
 const PROFILE = {
@@ -94,7 +94,7 @@ const plan = (label, control = el()) => {
 
 const d = new Date();
 const pad = (n) => String(n).padStart(2, "0");
-const TODAY_US = `${pad(d.getMonth() + 1)}/${pad(d.getDate())}/${d.getFullYear()}`;
+const TODAY_US = `${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${d.getFullYear()}`;
 const TODAY_ISO = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 
 console.log("\nCC-305 block");
@@ -103,7 +103,7 @@ check("Name is the applicant's legal name", plan(`Name | ${SEC}`).value, "Subhas
 check("Employee ID matches its own rule", plan(`Employee ID (if applicable) | ${SEC}`).key, "employeeId");
 check("Employee ID is left blank", plan(`Employee ID (if applicable) | ${SEC}`).blank, true);
 check("Date matches the self-ID date rule", plan(`Date | ${SEC}`).key, "selfIdDate");
-check("Date is today, MM/DD/YYYY", plan(`Date | ${SEC}`).value, TODAY_US);
+check("Date is today, MM-DD-YYYY", plan(`Date | ${SEC}`).value, TODAY_US);
 check("Date is ISO for a native date input", plan(`Date | ${SEC}`, el("date")).value, TODAY_ISO);
 
 console.log("\nthe same labels elsewhere are unaffected");
@@ -116,6 +116,31 @@ console.log("\nidentity fields are unreachable by the model");
 for (const label of ["First Name", "Email", "Please specify your gender.", "Please specify your veteran status."]) {
   check(`${label} is flagged identity`, plan(label, el(label.includes("specify") ? "select" : "text")).identity, true);
 }
+
+console.log("\nwork eligibility is profile-only");
+const WA = { personal: {}, workAuth: { authorizedToWork: "Yes", requireSponsorship: "No", workAuthType: "Citizen" }, eeo: {} };
+const waPlan = (label) => {
+  const control = el("select");
+  const rule = M.matchRule(control, label, RULES);
+  return { key: rule?.key ?? null, profileOnly: !!rule?.profileOnly, value: rule?.value ? rule.value(WA, control, label, 0) : null };
+};
+check("work authorization uses profile", waPlan("Are you legally authorized to work in the United States?").value, "Yes");
+check("work authorization is profile-only", waPlan("Are you legally authorized to work in the United States?").profileOnly, true);
+check("sponsorship uses profile", waPlan("Will you require sponsorship now or in the future?").value, "No");
+check("sponsorship is profile-only", waPlan("Will you require sponsorship now or in the future?").profileOnly, true);
+
+console.log("\ncanonical source and education ownership");
+const hearRule = M.matchRule(el("select"), "How did you hear about us?", RULES);
+check("How did you hear is profile-only", !!hearRule?.profileOnly, true);
+check("How did you hear canonical answer is LinkedIn", hearRule?.value(PROFILE), "LinkedIn");
+check("How did you hear falls back to Social Media", pick(["Select One", "Social Media", "Job Boards"], "LinkedIn", "How did you hear about us?", hearRule?.options), "Social Media");
+check("How did you hear falls back to Job Boards", pick(["Select One", "Job Boards"], "LinkedIn", "How did you hear about us?", hearRule?.options), "Job Boards");
+const schoolRule = M.matchRule(el("text"), "School or University", RULES);
+check("school is profile-only", !!schoolRule?.profileOnly, true);
+
+console.log("\napplication consent");
+const consentRule = M.matchRule(el("checkbox"), "I agree to the terms and conditions of this application.", RULES);
+check("agreement checkbox gets Yes", consentRule?.value(WA) ?? null, "Yes");
 
 console.log("\nEEO canonicalisation");
 const VH = "Please specify your veteran status.";

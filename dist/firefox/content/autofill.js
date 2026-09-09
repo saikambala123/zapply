@@ -1395,8 +1395,8 @@
          */
         ok = false;
       } else {
-        ok = M.setTextValue(el, String(value));
-        if (!ok) { await sleep(60); ok = M.setTextValue(el, String(value)); }
+        ok = M.setTextValue(el, String(value), field.label);
+        if (!ok) { await sleep(60); ok = M.setTextValue(el, String(value), field.label); }
       }
     } catch {
       ok = false;
@@ -1544,8 +1544,12 @@
       Boolean(rule?.identity && !rule?.eeo) ||
       /\b(e-?mail|phone|mobile|telephone|country\s*code|area\s*code|extension|first\s*name|last\s*name|middle\s*name|full\s*name|date\s*of\s*birth|address\s*line|postal|zip\s*code)\b/i
         .test(String(field?.label ?? "").split("|")[0]);
+    const protectedLegal =
+      Boolean(rule?.profileOnly) ||
+      /\b(work\s*authoriz|authorized\s+to\s+work|right\s+to\s+work|sponsor(?:ship|ed)|visa|immigration)\b/i
+        .test(String(field?.label ?? "").split("|")[0]);
 
-    if (saved?.answer && !profileOnly && !protectedIdentity) {
+    if (saved?.answer && !profileOnly && !protectedIdentity && !protectedLegal) {
       return { status: "fill", key: "saved-answer", value: saved.answer, rule, source: "saved" };
     }
 
@@ -1651,7 +1655,11 @@
     /(voluntary\s+self[-\s]?identification|self[-\s]?identification\s+of\s+disability|form\s*cc-?305|cc-?305|section\s*503|omb\s*control\s*number\s*1250|voluntary\s+disclosure|equal\s+employment\s+opportunity|eeo)/i;
 
   function offLimitsToAi(field) {
-    if (field.rule?.identity || field.rule?.eeo || field.rule?.blank) return true;
+    // Never let generated answers fill legal/eligibility declarations or any
+    // profile-owned field. These must come from the user's profile or remain
+    // blank; an AI guess here can silently submit the wrong work status.
+    if (field.rule?.identity || field.rule?.eeo || field.rule?.blank || field.rule?.profileOnly) return true;
+    if (/\b(work\s*authoriz|authorized\s+to\s+work|right\s+to\s+work|sponsor(?:ship|ed)|visa|immigration)\b/i.test(field.label || "")) return true;
     if (SELF_ID_LABEL_RE.test(field.label || "")) return true;
     try {
       const section = M.visibleText(field.el.closest("fieldset, section, [role='group']"));
@@ -1682,10 +1690,7 @@
         // a brief summary" — was skipped by the one pass meant to catch it.
         // Any labelled question is now attempted; the model is instructed to
         // answer only from the profile, and returns nothing when it can't.
-        // The same 300-character ceiling that lost the dropdown question was
-        // skipping long essay prompts here — and a long prompt is exactly the
-        // kind this pass exists to answer.
-        if (q.length < 4 || q.length > QUESTION_MAX) return false;
+        if (q.length < 4 || q.length > 300) return false;
         return true;
       })
       .slice(0, 60);
@@ -2366,93 +2371,6 @@
   );
 
   /**
-   * Text a widget speaks to a screen reader, rather than text a person wrote.
-   *
-   * react-select — which is what Greenhouse, Lever and Ashby render their
-   * dropdowns with — keeps a 1x1 clipped `role="log"` region beside every
-   * control and narrates itself into it: "option No, selected." after a pick,
-   * "5 results available." while filtering. That region is a *sibling* of the
-   * input, wraps no control of its own, and reads like ordinary prose, so it
-   * passed every test a question candidate had to pass. On a Greenhouse form
-   * whose real question was too long to survive the length ceiling, this is
-   * what took its place — every dropdown on the page banked under the question
-   * "option No, selected.".
-   */
-  const ANNOUNCEMENT_RE = new RegExp(
-    "^(?:" +
-      // react-select's own onChange / onFocus / onFilter commentary.
-      "options? .*?,\\s*(?:de)?selected\\b.*|" +
-      "option .*? is disabled\\b.*|" +
-      "option .*?focused,\\s*\\d+\\s*of\\s*\\d+.*|" +
-      "all selected options have been cleared.*|" +
-      "\\d+\\s*results?\\s*(?:are\\s*)?available.*|" +
-      "no results found.*|" +
-      "select is focused.*|" +
-      "menu is (?:open|closed).*|" +
-      "loading\\W*|" +
-      "use (?:up and down |left and right )?arrow keys.*|" +
-      "press (?:down|up|left|right|enter|escape|esc|tab|backspace)\\b.*" +
-    ")$",
-    "i"
-  );
-
-  /**
-   * Is this node a live region, or text hidden for a screen reader's benefit?
-   *
-   * The wording test above catches the announcements a library ships in
-   * English. This catches the container regardless of what it happens to say,
-   * which is what makes the fix hold on a localised form or a library that
-   * words its commentary differently.
-   */
-  function isAnnouncementNode(node) {
-    if (!node?.closest) return false;
-    try {
-      if (node.closest('[aria-live], [role="log"], [role="status"], [role="alert"], [aria-hidden="true"]')) {
-        return true;
-      }
-    } catch {}
-    /**
-     * The visually-hidden idiom: still laid out, but clipped to a single
-     * pixel. Deliberately not a test for zero size — a collapsed section is
-     * 0x0 and its headings are perfectly good questions once it opens.
-     */
-    try {
-      const r = node.getBoundingClientRect?.();
-      if (r && r.width > 0 && r.width <= 1 && r.height > 0 && r.height <= 1) return true;
-      const style = getComputedStyle(node);
-      const clip = `${style?.clip || ""} ${style?.clipPath || ""}`;
-      if (/rect\(\s*(?:0|1)px/i.test(clip) || /inset\(\s*50%/i.test(clip)) return true;
-    } catch {}
-    return false;
-  }
-
-  /**
-   * How long a question may be before it is shortened rather than thrown away.
-   *
-   * There was a flat ceiling of 300 characters and anything over it was
-   * *discarded*, not shortened. Greenhouse's compliance questions run well
-   * past that — the StackAdapt secondary-employment question is 381 characters
-   * — so the question a person could plainly read above the dropdown was
-   * dropped for length, and the search fell through to the screen-reader
-   * announcement sitting beside it.
-   *
-   * A long question is still a question. It is now cut at a word boundary and
-   * kept, so length alone can never send the search down the fallback chain.
-   * The cut is deterministic, so the same question on the next application
-   * shortens to the same key and a saved answer still matches.
-   */
-  const QUESTION_MAX = 600;
-
-  function trimQuestion(value) {
-    const text = String(value ?? "").trim().replace(/\s+/g, " ");
-    if (text.length <= QUESTION_MAX) return text;
-    const cut = text.slice(0, QUESTION_MAX);
-    const boundary = cut.lastIndexOf(" ");
-    const kept = boundary > QUESTION_MAX * 0.6 ? cut.slice(0, boundary) : cut;
-    return `${kept.replace(/[\s,;:.\u2013\u2014-]+$/, "")}\u2026`;
-  }
-
-  /**
    * Every label the controls in this field's group carry.
    *
    * Built from the group members themselves rather than only from
@@ -2661,14 +2579,10 @@
         try { if (document.getElementById(forId) && !memberIds.has(forId)) return ""; } catch {}
       }
       if (inAnotherField(cand, stopAt)) return "";
-      // A live region is the widget talking to a screen reader, not the form
-      // asking the applicant something.
-      if (isAnnouncementNode(cand)) return "";
-      const text = trimQuestion(cand.textContent || "");
-      if (text.length < 8) return "";
+      const text = (cand.textContent || "").trim().replace(/\s+/g, " ");
+      if (text.length < 8 || text.length > 300) return "";
       if (skip.has(answerKey(text))) return "";
       if (ANSWER_LIKE_RE.test(text)) return "";
-      if (ANNOUNCEMENT_RE.test(text)) return "";
       if (looksMachineGenerated(text)) return "";
       return text;
     };
@@ -2709,11 +2623,7 @@
       String(list || "").split(/\s+/).forEach((id) => {
         if (!id) return;
         const node = document.getElementById(id);
-        // react-select points `aria-describedby` at its own live region, so a
-        // pointed-at node still has to prove it is a label and not commentary.
-        if (node && !node.contains(el) && !isAnnouncementNode(node)) {
-          push(M.visibleText?.(node) ?? node.textContent);
-        }
+        if (node && !node.contains(el)) push(M.visibleText?.(node) ?? node.textContent);
       });
     };
 
@@ -2750,11 +2660,10 @@
     const machine = machineNameParts(el);
 
     const acceptable = (value) => {
-      const text = trimQuestion(value);
-      if (text.length < floor) return "";
+      const text = String(value ?? "").trim().replace(/\s+/g, " ");
+      if (text.length < floor || text.length > 300) return "";
       if (options.has(answerKey(text))) return "";
       if (ANSWER_LIKE_RE.test(text)) return "";
-      if (ANNOUNCEMENT_RE.test(text)) return "";
       if (looksMachineGenerated(text)) return "";
       return text;
     };
@@ -3265,17 +3174,8 @@
       if (!anyTicked) return false;
     }
 
-    /**
-     * The last of the three 300-character ceilings.
-     *
-     * Even once the question survived extraction, this threw it away again —
-     * so the Greenhouse dropdown whose question ran to 381 characters produced
-     * no pending answer at all. `trimQuestion` already bounds every question,
-     * so what is left here is a sanity check, not a filter: the allowance is
-     * the trim plus room for a row qualifier like " — Education 2".
-     */
     const question = capturedQuestion(field);
-    if (!question || question.length > QUESTION_MAX + 100) return false;
+    if (!question || question.length > 300) return false;
 
     el.__zapplyLastCaptured = answer;
     if (!worthSaving(field, answer)) return false;

@@ -328,26 +328,6 @@ function renderEntryText(entry, { prefix = "" } = {}) {
   q.appendChild(document.createTextNode(question || "(question not detected)"));
   if (!question) q.classList.add("pending__q--missing");
 
-  /**
-   * A long question is shown in full, but not all at once.
-   *
-   * Greenhouse's compliance questions run past 350 characters. Printed whole in
-   * a popup this narrow one of them fills nine lines and pushes Save off the
-   * bottom, so the row is clamped to four and opens on a click. The whole text
-   * is on the `title` either way, so it is always readable without a click.
-   */
-  if (question.length > 140) {
-    q.classList.add("pending__q--long");
-    q.title = question;
-    q.setAttribute("role", "button");
-    q.setAttribute("tabindex", "0");
-    const toggle = () => q.classList.toggle("pending__q--open");
-    q.addEventListener("click", toggle);
-    q.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
-    });
-  }
-
   const kind = document.createElement("span");
   kind.className = "pending__type";
   kind.textContent = typeLabel(entry.inputType);

@@ -348,7 +348,11 @@
     const type = (el?.getAttribute?.("type") || el?.type || "").toLowerCase();
     if (type === "date") return `${yyyy}-${mm}-${dd}`;
     if (type === "month") return `${yyyy}-${mm}`;
-    return `${mm}/${dd}/${yyyy}`;
+    // Workday/ATS text date controls commonly display and validate the
+    // voluntary self-identification signature date as MM-DD-YYYY. Keep the
+    // native date/month formats unchanged, but never write slash-formatted
+    // dates into a text box in the CC-305 flow.
+    return `${mm}-${dd}-${yyyy}`;
   };
 
   const dateForField = (raw, el) => {
@@ -474,7 +478,7 @@
    * outright are used, and an explicit stored answer always wins over it.
    */
   const SETTLED_STATUS =
-    /\b(u\.?s\.?\s*)?citizen\b|\bnational\b|\bpermanent\s*resident\b|\bgreen\s*card\b|\bcitizenship\b|\bindefinite\s*leave\b|\bright\s*to\s*work\b/i;
+    /\b(u\.?s\.?\s*)?citizen\b|\bpermanent\s*resident\b|\bgreen\s*card\b|\bindefinite\s*leave\b|\bright\s*to\s*work\b/i;
 
   const authorizedFor = (p) => {
     const stored = W(p).authorizedToWork;
@@ -1225,71 +1229,16 @@
     /* ---------------- Education ---------------- */
     {
       key: "school",
+      profileOnly: true,
       weight: 10,
       match: [/\b(school|university|college|institution)\b/i],
-      /**
-       * "Do you have a High School Diploma or GED?" is a yes/no question that
-       * happens to contain the word "school". It was matching here and being
-       * answered with the name of the applicant's university — a nonsense
-       * answer to a required question, on a form that then would not submit.
-       *
-       * The shape gives it away: a question asking whether they *have* a
-       * qualification, rather than a field asking which institution.
-       */
-      deny: [
-        /high\s*school\s*only|graduated\b.*\?/i,
-        /\b(do|did|have)\s*you\s*(have|hold|complete|attend|graduate)/i,
-        /\bhigh\s*school\s*(diploma|degree|equivalen)/i,
-        /\bge\.?d\.?\b/i,
-        /\b(diploma|certificate)\s*or\s*ged\b/i,
-      ],
+      deny: [/high\s*school\s*only|graduated\b.*\?/i],
       type: ["text", "select"],
       value: (p, _el, _label, index) => latestSchool(p, index).school,
     },
     {
-      /**
-       * The box that blocks the form.
-       *
-       * "I agree to the Terms", "I certify the above is accurate", the privacy
-       * acknowledgement on a Workday account signup — every one of them is
-       * required, none of them has an answer in the profile, and leaving them
-       * unticked stops the application dead with "Please check the box to
-       * continue". Left unmatched, this one was being claimed by
-       * `disabilityStatus` — the CC-305 heading was in its section context —
-       * so it was not merely unticked, it was being read as a disability
-       * declaration.
-       *
-       * Consent to *terms* is ticked. Consent to be *marketed at* is not: those
-       * are opt-ins the applicant should make themselves, and they are denied
-       * below rather than left to chance.
-       */
-      key: "consentAgree",
-      // Above disabilityStatus (11) and the demographic rules, which otherwise
-      // claim any checkbox sitting inside a self-identification section.
-      weight: 15,
-      match: [
-        /\bi\s*(agree|consent|accept|acknowledge|certify|confirm)\b/i,
-        /\bterms\s*(and|&|of)\s*(conditions|use|service)\b/i,
-        /\bprivacy\s*(policy|notice|statement)\b/i,
-        /\bagree\s*to\s*the\s*terms\b/i,
-        /\bhave\s*read\s*and\s*(agree|accept|understood?)\b/i,
-        /\backnowledge\s*(and\s*agree|that|the)\b/i,
-        /\bcertify\s*that\s*(the|all|my)\b/i,
-      ],
-      deny: [
-        THIRD_PARTY,
-        // Opt-ins, not conditions of applying. The applicant chooses these.
-        /\b(marketing|promotional|newsletter|subscribe|mailing\s*list|job\s*alerts?|talent\s*(community|network)|future\s*(roles|opportunities)|contact\s*me\s*about)\b/i,
-        // A disability or veteran declaration is a statement about them, not
-        // an agreement to terms, even when phrased with "I certify".
-        /\b(disabilit|veteran|ethnicit|race|gender)\b/i,
-      ],
-      type: ["checkbox"],
-      value: () => "Yes",
-      options: { Yes: ["yes", "i agree", "agree", "accept", "true", "on"] },
-    },
-    {
       key: "degree",
+      profileOnly: true,
       weight: 10,
       match: [/\bdegree\b/i, /\beducation\s*level\b/i, /\bhighest\s*(level\s*of\s*)?education\b/i],
       deny: [/field|major|subject|date/i],
@@ -1298,6 +1247,7 @@
     },
     {
       key: "fieldOfStudy",
+      profileOnly: true,
       weight: 11,
       match: [/\b(field\s*of\s*study|major|discipline|concentration|area\s*of\s*study)\b/i],
       type: ["text", "select"],
@@ -1313,6 +1263,7 @@
     },
     {
       key: "gpa",
+      profileOnly: true,
       weight: 11,
       match: [/\bgpa\b/i, /\bgrade\s*point\b/i],
       type: ["text", "number"],
@@ -1320,6 +1271,7 @@
     },
     {
       key: "graduationDate",
+      profileOnly: true,
       weight: 9,
       match: [/\b(graduation|grad)\s*(date|year|month)\b/i, /\b(expected|anticipated)\s*graduation\b/i],
       type: ["text", "date", "month", "select"],
@@ -1328,6 +1280,7 @@
     /* Split Month / Day / Year controls inside an education block. */
     {
       key: "educationDatePart",
+      profileOnly: true,
       weight: 16,
       match: [
         /\b(month|year|day|mm|dd|yy(?:yy)?)\b.*\b(education|school|college|university|degree|academic)\b/i,
@@ -1348,6 +1301,7 @@
     },
     {
       key: "educationStartMonth",
+      profileOnly: true,
       weight: 13,
       match: [
         /\b(education|school|college|university)\b.*\b(start|begin)\w*\s*date\s*month\b/i,
@@ -1359,6 +1313,7 @@
     },
     {
       key: "educationStartYear",
+      profileOnly: true,
       weight: 13,
       match: [
         /\b(education|school|college|university)\b.*\b(start|begin)\w*\s*date\s*year\b/i,
@@ -1369,6 +1324,7 @@
     },
     {
       key: "educationEndMonth",
+      profileOnly: true,
       weight: 13,
       match: [
         /\b(education|school|college|university)\b.*\bend\s*date\s*month\b/i,
@@ -1381,6 +1337,7 @@
     },
     {
       key: "educationEndYear",
+      profileOnly: true,
       weight: 13,
       match: [
         /\b(education|school|college|university)\b.*\bend\s*date\s*year\b/i,
@@ -1620,6 +1577,7 @@
     {
       key: "howDidYouHear",
       weight: 11,
+      profileOnly: true,
       match: [/\bhow\s*did\s*you\s*(hear|find|learn)\b/i, /\bsource\s*of\s*(referral|application)\b/i, /\bwhere\s*did\s*you\s*(hear|find)\b/i],
       type: ["select", "text", "radio"],
       value: () => "LinkedIn",   // Always use LinkedIn as the canonical source answer.
@@ -1654,6 +1612,22 @@
         Google: ["google", "search engine", "online", "internet"],
         Other: ["other"],
       },
+    },
+    {
+      key: "applicationConsent",
+      weight: 12,
+      match: [
+        /\b(i\s+)?agree\b.*\b(terms|conditions|consent|privacy|acknowledg)/i,
+        /\b(consent|acknowledg)\b.*\b(terms|conditions|application|privacy)/i,
+        /\b(terms\s+and\s+conditions|privacy\s+policy)\b/i,
+      ],
+      type: ["checkbox", "radio", "select"],
+      // The applicant explicitly requested that standard application-consent
+      // checkboxes/radios be accepted automatically during autofill. This is
+      // intentionally limited to controls whose own label is an agreement or
+      // acknowledgement; it never turns an arbitrary checkbox into Yes.
+      value: () => "Yes",
+      options: { Yes: ["yes", "agree", "i agree", "consent", "acknowledge", "true"] },
     },
     {
       key: "securityClearance",

@@ -242,26 +242,6 @@ body {
 .pending__x:hover { background: rgba(229,72,77,.1); border-color: rgba(229,72,77,.45); color: var(--danger); }
 .pending__list li:last-child { border-bottom: 0; }
 .pending__q { display: block; font-size: 11.5px; font-weight: 600; color: var(--ink); line-height: 1.35; }
-/* A long question is clamped to four lines and opens on a click, so one
-   Greenhouse compliance question cannot push Save off the bottom of the list. */
-.pending__q--long {
-  display: -webkit-box;
-  -webkit-line-clamp: 4;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  cursor: pointer;
-}
-.pending__q--long::after {
-  content: " more";
-  color: var(--brand);
-  font-weight: 700;
-}
-.pending__q--long.pending__q--open {
-  display: block;
-  -webkit-line-clamp: none;
-  overflow: visible;
-}
-.pending__q--long.pending__q--open::after { content: " less"; }
 .pending__a { display: block; margin-top: 2px; font-size: 11px; color: var(--soft); line-height: 1.35; }
 .pending__new { color: var(--brand); font-weight: 700; }
 
