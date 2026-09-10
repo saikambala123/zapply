@@ -94,7 +94,7 @@ const plan = (label, control = el()) => {
 
 const d = new Date();
 const pad = (n) => String(n).padStart(2, "0");
-const TODAY_US = `${pad(d.getMonth() + 1)}/${pad(d.getDate())}/${d.getFullYear()}`;
+const TODAY_SELF_ID = `${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${d.getFullYear()}`;
 const TODAY_ISO = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 
 console.log("\nCC-305 block");
@@ -103,7 +103,7 @@ check("Name is the applicant's legal name", plan(`Name | ${SEC}`).value, "Subhas
 check("Employee ID matches its own rule", plan(`Employee ID (if applicable) | ${SEC}`).key, "employeeId");
 check("Employee ID is left blank", plan(`Employee ID (if applicable) | ${SEC}`).blank, true);
 check("Date matches the self-ID date rule", plan(`Date | ${SEC}`).key, "selfIdDate");
-check("Date is today, MM/DD/YYYY", plan(`Date | ${SEC}`).value, TODAY_US);
+check("Date is today, MM-DD-YYYY", plan(`Date | ${SEC}`).value, TODAY_SELF_ID);
 check("Date is ISO for a native date input", plan(`Date | ${SEC}`, el("date")).value, TODAY_ISO);
 
 console.log("\nthe same labels elsewhere are unaffected");
@@ -237,12 +237,12 @@ console.log("\nwork eligibility");
 const auth = RULES.find((r) => r.key === "authorizedToWork");
 const spon = RULES.find((r) => r.key === "requireSponsorship");
 check("eligibility rules are profile-only", [auth, spon, RULES.find((r) => r.key === "visaStatus"), RULES.find((r) => r.key === "willingToRelocate")].every((r) => r.profileOnly), true);
-check("a citizen is authorised without restating it", auth.value({ workAuth: { workAuthType: "U.S. Citizen" } }), "Yes");
-check("a citizen needs no sponsorship", spon.value({ workAuth: { workAuthType: "U.S. Citizen" } }, null, "Will you require sponsorship?"), "No");
-check("a green card holder is authorised", auth.value({ workAuth: { workAuthType: "Green Card" } }), "Yes");
+check("citizenship alone does not answer authorization in an unspecified country", auth.value({ workAuth: { workAuthType: "U.S. Citizen" } }), null);
+check("citizenship alone does not answer sponsorship", spon.value({ workAuth: { workAuthType: "U.S. Citizen" } }, null, "Will you require sponsorship?"), null);
+check("status text does not replace an explicit authorization answer", auth.value({ workAuth: { workAuthType: "Green Card" } }), null);
 check("an explicit stored answer still wins", spon.value({ workAuth: { workAuthType: "U.S. Citizen", requireSponsorship: "Yes" } }, null, "Will you require sponsorship?"), "Yes");
 check("nothing recorded stays blank", auth.value({ workAuth: {} }) || null, null);
-check("inverted phrasing, citizen", spon.value({ workAuth: { workAuthType: "U.S. Citizen" } }, null, "Are you able to work without sponsorship?"), "Yes");
+check("inverted phrasing requires explicit facts", spon.value({ workAuth: { workAuthType: "U.S. Citizen" } }, null, "Are you able to work without sponsorship?"), null);
 check("inverted phrasing, needs sponsorship", spon.value({ workAuth: { requireSponsorship: "Yes" } }, null, "Are you able to work without sponsorship?"), "No");
 
 /* ------------------------------------------------------------------ *

@@ -308,6 +308,13 @@
    * Collects every plausible description of a field, best source first.
    * Returned as a single string so one regex test covers all of them.
    */
+  function isStandaloneConsent(el) {
+    if (el?.type !== "checkbox" && el?.getAttribute?.("role") !== "checkbox") return false;
+    const own = accessibleName(el) || visibleText(el.closest?.("label")) ||
+      (el.getAttribute?.("role") === "checkbox" ? visibleText(el) : "");
+    return /\b(?:i\s+(?:agree|accept|consent|acknowledge)|terms\s*(?:and|&)\s*conditions|privacy\s*(?:policy|notice))\b/i.test(own);
+  }
+
   function deriveLabel(el) {
     const parts = [];
     const push = (v) => {
@@ -315,7 +322,7 @@
       if (c && !parts.includes(c)) parts.push(c);
     };
 
-    if (el.type === "radio" || el.type === "checkbox") {
+    if (el.type === "radio" || (el.type === "checkbox" && !isStandaloneConsent(el))) {
       const fs = el.closest("fieldset");
       const legend = fs?.querySelector("legend");
       if (legend && !legend.contains(el)) push(visibleText(legend));
@@ -471,7 +478,9 @@
       el.getAttribute("aria-haspopup") === "listbox" ||
       el.getAttribute("aria-haspopup") === "menu" ||
       el.getAttribute("aria-haspopup") === "true" ||
-      (el.tagName === "BUTTON" && /dropdown|select|prompt/i.test(el.getAttribute("data-automation-id") || ""))
+      (el.tagName === "BUTTON" && (el.hasAttribute?.("aria-expanded") || /dropdown|select|prompt/i.test(el.getAttribute("data-automation-id") || ""))) ||
+      /^(list|both)$/i.test(el.getAttribute("aria-autocomplete") || "") ||
+      (tag === "input" && Boolean(el.closest?.('[data-automation-id="multiSelectContainer"], [data-automation-id="searchBox"]')))
     ) {
       return "select";
     }
@@ -507,20 +516,7 @@
         (kind === "number" && types.includes("text")) ||
         (kind === "radio" && types.includes("select")) ||
         (kind === "date" && types.includes("text")) ||
-        (kind === "month" && types.includes("text")) ||
-        // A <textarea> is a free-text box in every ATS that uses one — the
-        // same box a <input type=text> would be, just multi-line. `fieldKind`
-        // reports it as its own kind "textarea" so rules can opt in with
-        // type:["textarea"] for genuinely long answers (summary, cover
-        // letter), but every rule that only listed "text" was then invisible
-        // to a form that happened to render that one field as a textarea.
-        // That is exactly how "What date are you available to start?"
-        // (type: ["text","date","month"], no "textarea") came up blank and
-        // flagged as needing the applicant on portals that use a textarea
-        // for it — the rule never got the chance to run. A plain single-line
-        // answer is just as valid in a textarea as an input, so "text" rules
-        // are now eligible for both.
-        (kind === "textarea" && types.includes("text"));
+        (kind === "month" && types.includes("text"));
       if (!typeOk) continue;
 
       // A denial may be a pattern or a predicate. The predicate form exists
@@ -534,7 +530,15 @@
       // "a bare Date, but only inside a Voluntary Self-Identification block" —
       // a condition no single pattern in `match` can express, because those are
       // OR'd against each description separately.
-      if (rule.require && !rule.require.test(label)) continue;
+      if (rule.require) {
+        let required = false;
+        try {
+          required = typeof rule.require === "function"
+            ? Boolean(rule.require(label, el))
+            : Boolean(rule.require.test(label));
+        } catch {}
+        if (!required) continue;
+      }
 
       /**
        * Where the match landed decides how much it counts.
@@ -559,6 +563,7 @@
       let hitIndex = -1;
       let placeBonus = 0;
       haystacks.forEach((hay, position) => {
+        if (rule.matchOwn && position !== 1) return;
         const i = rule.match.findIndex((re) => re.test(hay));
         if (i === -1) return;
         // haystacks[0] is the joined text, [1] is the field's own primary
@@ -1465,6 +1470,92 @@
     return [];
   }
 
+  // Use explicit polarity before lexical scoring. "Authorized" must never
+  // match "Not authorized" through a substring or a synonym.
+  function binaryChoice(text) {
+    if (DECLINE_RE.test(String(text ?? ""))) return null;
+    const t = norm(text).replace(/[’']/g, "");
+    if (/^(no|false|0)(?:$|\b)|^(?:i\s+)?(?:do not|dont|disagree|decline|not authori[sz]ed|not eligible)/i.test(t) ||
+        /^(?:i am|im)\s+(?:not|ineligible|unauthori[sz]ed)/i.test(t)) return "no";
+    if (/^(yes|true|1)(?:$|\b)|^(?:i\s+)?(?:agree|accept|consent|acknowledge)(?:$|\b)|^(?:i am\s+)?(?:authori[sz]ed|eligible)(?:$|\b)/i.test(t)) return "yes";
+    return null;
+  }
+
+  function sourceChoiceScore(text) {
+    const t = norm(text).replace(/[›»>❯]+/g, "").trim();
+    if (/\blinked\s*in\b/i.test(t)) return 150;
+    if (/^(?:social media|social networks?|professional social networks?)(?:\s*\([^)]*\))?$/.test(t)) return 110;
+    if (/^(?:online\s+)?(?:job boards?|job sites?|job portals?|career portals?)(?:\s*\([^)]*\))?$/.test(t)) return 100;
+    if (/^(?:other|others|other source|other option)(?:\s*[-:(].*)?$/.test(t)) return 80;
+    return 0;
+  }
+  const isLinkedIn = (value) => /^linked\s*in$/i.test(String(value ?? "").trim());
+  const isSchool = (hint) => /\b(school|university|college|institution)\b/i.test(String(hint ?? "").split("|")[0]) &&
+    !/degree|major|field of study|location|date|year|month|gpa/i.test(String(hint ?? "").split("|")[0]);
+  const schoolText = (text) => norm(text).normalize("NFKC").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+
+  /**
+   * State/province pickers commonly disagree with the profile only in shape:
+   * "Illinois", "IL", "US-IL" and "IL - Illinois" are the same answer. Keep
+   * those aliases inside the matcher so the profile remains the authority and
+   * no ATS-specific option id ever leaks into Saved Answers.
+   */
+  const REGION_ROWS = [
+    "US|AL|Alabama", "US|AK|Alaska", "US|AZ|Arizona", "US|AR|Arkansas", "US|CA|California",
+    "US|CO|Colorado", "US|CT|Connecticut", "US|DE|Delaware", "US|FL|Florida", "US|GA|Georgia",
+    "US|HI|Hawaii", "US|ID|Idaho", "US|IL|Illinois", "US|IN|Indiana", "US|IA|Iowa",
+    "US|KS|Kansas", "US|KY|Kentucky", "US|LA|Louisiana", "US|ME|Maine", "US|MD|Maryland",
+    "US|MA|Massachusetts", "US|MI|Michigan", "US|MN|Minnesota", "US|MS|Mississippi", "US|MO|Missouri",
+    "US|MT|Montana", "US|NE|Nebraska", "US|NV|Nevada", "US|NH|New Hampshire", "US|NJ|New Jersey",
+    "US|NM|New Mexico", "US|NY|New York", "US|NC|North Carolina", "US|ND|North Dakota", "US|OH|Ohio",
+    "US|OK|Oklahoma", "US|OR|Oregon", "US|PA|Pennsylvania", "US|RI|Rhode Island", "US|SC|South Carolina",
+    "US|SD|South Dakota", "US|TN|Tennessee", "US|TX|Texas", "US|UT|Utah", "US|VT|Vermont",
+    "US|VA|Virginia", "US|WA|Washington", "US|WV|West Virginia", "US|WI|Wisconsin", "US|WY|Wyoming",
+    "US|DC|District of Columbia", "US|PR|Puerto Rico",
+    "CA|AB|Alberta", "CA|BC|British Columbia", "CA|MB|Manitoba", "CA|NB|New Brunswick",
+    "CA|NL|Newfoundland and Labrador", "CA|NS|Nova Scotia", "CA|NT|Northwest Territories", "CA|NU|Nunavut",
+    "CA|ON|Ontario", "CA|PE|Prince Edward Island", "CA|QC|Quebec", "CA|SK|Saskatchewan", "CA|YT|Yukon",
+    "IN|AP|Andhra Pradesh", "IN|AR|Arunachal Pradesh", "IN|AS|Assam", "IN|BR|Bihar",
+    "IN|CG|Chhattisgarh", "IN|GA|Goa", "IN|GJ|Gujarat", "IN|HR|Haryana", "IN|HP|Himachal Pradesh",
+    "IN|JH|Jharkhand", "IN|KA|Karnataka", "IN|KL|Kerala", "IN|MP|Madhya Pradesh", "IN|MH|Maharashtra",
+    "IN|MN|Manipur", "IN|ML|Meghalaya", "IN|MZ|Mizoram", "IN|NL|Nagaland", "IN|OD|Odisha",
+    "IN|PB|Punjab", "IN|RJ|Rajasthan", "IN|SK|Sikkim", "IN|TN|Tamil Nadu", "IN|TS|Telangana",
+    "IN|TR|Tripura", "IN|UP|Uttar Pradesh", "IN|UT|Uttarakhand", "IN|WB|West Bengal", "IN|DL|Delhi",
+    "IN|JK|Jammu and Kashmir", "IN|LA|Ladakh", "IN|CH|Chandigarh", "IN|PY|Puducherry",
+  ];
+
+  const REGION_INDEX = (() => {
+    const map = new Map();
+    for (const row of REGION_ROWS) {
+      const [country, code, name] = row.split("|");
+      const values = [code, name, `${country}-${code}`, `${code} - ${name}`, `${name} (${code})`];
+      for (const key of [code, name, `${country}-${code}`]) {
+        const normalized = normalizeChoiceText(key);
+        const current = map.get(normalized) || [];
+        map.set(normalized, [...new Set([...current, ...values])]);
+      }
+    }
+    return map;
+  })();
+
+  function isRegionField(hint) {
+    const own = String(hint ?? "").split("|")[0];
+    return /\b(state|province|region|territory)\b/i.test(own) &&
+      !/\b(status|employment|veteran|marital|united states.*country)\b/i.test(own);
+  }
+
+  function regionAliases(value, hint) {
+    if (!isRegionField(hint)) return [];
+    const raw = String(value ?? "").trim();
+    if (!raw) return [];
+    const key = normalizeChoiceText(raw);
+    const direct = REGION_INDEX.get(key) || [];
+    // Profiles occasionally store an ISO-like prefix with a space or slash.
+    const tail = key.match(/^(?:us|ca|in)\s+([a-z]{2})$/)?.[1];
+    const byTail = tail ? REGION_INDEX.get(tail) || [] : [];
+    return [...new Set([raw, ...direct, ...byTail])];
+  }
+
   function setSelectValue(el, value, synonyms, hint) {
     if (value === undefined || value === null || String(value).trim() === "") return false;
     const options = Array.from(el.options ?? []);
@@ -1472,11 +1563,17 @@
 
     const want = normalizeChoiceText(value);
     const rawWant = norm(value);
-    const accepted = synonymsFor(synonyms, value).map(normalizeChoiceText).filter(Boolean);
+    const accepted = [...synonymsFor(synonyms, value), ...regionAliases(value, hint)]
+      .map(normalizeChoiceText).filter(Boolean);
     const primary = [want, rawWant].filter(Boolean);
     const wantId = eeoId(value, hint);
 
     const score = (opt) => {
+      if (opt.disabled || opt.parentElement?.disabled) return 0;
+      if (isLinkedIn(value)) return sourceChoiceScore(opt.textContent);
+      if (isSchool(hint)) return schoolText(opt.textContent) === schoolText(value) ? 150 : 0;
+      const polarity = binaryChoice(value), branch = binaryChoice(opt.textContent);
+      if (polarity && branch) return polarity === branch ? 135 : 0;
       const text = normalizeChoiceText(opt.textContent);
       const val = normalizeChoiceText(opt.value);
       if (!text && !val) return 0;
@@ -1608,6 +1705,8 @@
     const val = norm(optionValue);
     const want = norm(target);
     if ((!label && !val) || !want) return 0;
+    const polarity = binaryChoice(target), branch = binaryChoice(optionText);
+    if (polarity && branch) return polarity === branch ? 135 : 0;
 
     const wantId = eeoId(want, hint);
     if (wantId) {
@@ -1759,6 +1858,7 @@
    * One resolver now answers the question for all of them.
    */
   function choiceGroup(el) {
+    if (isStandaloneConsent(el)) return [el];
     if (!el) return [];
 
     // Segmented buttons: a row of <button>s acting as one choice.
@@ -1860,7 +1960,15 @@
     let best = null, bestScore = 0;
 
     for (const radio of group) {
+      if (radio.disabled || radio.getAttribute("aria-disabled") === "true") continue;
       const label = radioOptionText(radio);
+      const polarity = binaryChoice(value), branch = binaryChoice(label);
+      if (polarity && branch && polarity !== branch) continue;
+      if (isLinkedIn(value)) {
+        const score = sourceChoiceScore(label);
+        if (score > bestScore) { bestScore = score; best = radio; }
+        continue;
+      }
       const option = radio.getAttribute("value") || "";
       let score = 0;
       for (let i = 0; i < targets.length; i++) {
@@ -1922,7 +2030,7 @@
   const OPTION_SELECTOR =
     '[role="option"], [role="menuitem"], [role="menuitemradio"], [role="treeitem"], ' +
     '[role="listbox"] li, [role="menu"] li, li[data-value], ' +
-    '[data-automation-id*="promptOption"], [data-automation-id="promptLeafNode"], ' +
+    '[data-automation-id*="promptOption"], [data-automation-id="promptLeafNode"], [data-automation-id="promptExpandableNode"], ' +
     '[class*="menu"] [class*="option"], [class*="dropdown"] li, [class*="select__option"], ' +
     '[class*="Dropdown"] li, ul[class*="option"] li, [class*="autocomplete"] li';
 
@@ -1961,7 +2069,7 @@
       const ids = (el.getAttribute(attr) || "").split(/\s+/).filter(Boolean);
       for (const id of ids) {
         const node = document.getElementById(id);
-        if (node && optionNodesIn(node).length) return node;
+        if (node && isShowing(node)) return node;
       }
     }
     const activeId = el.getAttribute("aria-activedescendant");
@@ -2125,8 +2233,7 @@
         { key: "Enter", code: "Enter", keyCode: 13 },
       ]) {
         try {
-          el.dispatchEvent(new KeyboardEvent("keydown", { ...key, which: key.keyCode, bubbles: true, cancelable: true }));
-          el.dispatchEvent(new KeyboardEvent("keyup", { ...key, which: key.keyCode, bubbles: true, cancelable: true }));
+          promptKey(el, key.key);
         } catch {}
         const until = Date.now() + 400;
         while (!options.length && Date.now() < until) {
@@ -2143,7 +2250,10 @@
   /** Re-reads this menu's options after typing changed the filtered list. */
   function menuOptions(session) {
     if (!session) return [];
-    if (MENU.popup && document.contains(MENU.popup)) return optionNodesIn(MENU.popup);
+    if (MENU.popup && document.contains(MENU.popup) && isShowing(MENU.popup)) {
+      const current = optionNodesIn(MENU.popup);
+      if (current.length) return current;
+    }
     const declared = declaredPopup(session.el || MENU.el || document.body);
     if (declared) { MENU.popup = declared; return optionNodesIn(declared); }
     return visibleOptions().filter((n) => !session.baseline.has(n));
@@ -2310,8 +2420,8 @@
   /* ---------------- nested menus ---------------- */
 
   const CATEGORY_HINTS = [
-    [/linkedin/i, ["social media", "job board", "online", "internet", "website", "professional network"]],
-    [/indeed|glassdoor|monster|dice|ziprecruiter|naukri|seek/i, ["job board", "online", "internet", "job site"]],
+    [/linkedin/i, ["social media", "social network", "job portal", "job board", "job site", "professional network", "online"]],
+    [/indeed|glassdoor|monster|dice|ziprecruiter|naukri|seek/i, ["job portal", "job board", "online", "internet", "job site"]],
     [/referr?al|employee|friend|colleague/i, ["referral", "employee referral", "word of mouth", "personal"]],
     [/company\s*(web)?site|our\s*web\s*site|careers?\s*(page|site)/i, ["our web site", "company website", "website", "online"]],
     [/recruiter|agency|head\s*hunter/i, ["recruiter", "agency", "direct sourcing", "search firm"]],
@@ -2331,12 +2441,35 @@
 
   function isParentOption(option) {
     if (!option) return false;
-    if (option.getAttribute("aria-haspopup")) return true;
+    if (/^(true|menu|listbox|tree)$/.test(option.getAttribute("aria-haspopup") || "")) return true;
+    if (/prompt.*(?:expand|parent|category|folder|node)/i.test(option.getAttribute("data-automation-id") || "")) return true;
     if (option.getAttribute("aria-expanded") !== null) return true;
     if (/submenu|has-children|expandable|parent/i.test(option.className || "")) return true;
-    if (option.querySelector('[class*="chevron"], [class*="arrow"], [class*="caret"], svg')) return true;
+    if (option.querySelector('[class*="chevron"], [class*="arrow"], [class*="caret"], svg[data-icon*="chevron" i], svg[aria-label*="expand" i]')) return true;
     if (/[›»>❯]\s*$/.test(clean(option.textContent))) return true;
     return false;
+  }
+
+  function isSourceBranchCandidate(option) {
+    if (isParentOption(option)) return true;
+    if (!/promptOption/i.test(option?.getAttribute?.("data-automation-id") || "")) return false;
+    const score = sourceChoiceScore(option.textContent || option.getAttribute?.("aria-label") || "");
+    // `promptOption` does not reveal whether the row is a leaf. Probe every
+    // non-LinkedIn row under the bounded traversal budget; an actual leaf just
+    // closes the menu and is reopened, while a parent reveals the next level.
+    return score < 150;
+  }
+
+  function looksLikeWorkdaySourceRoot(options) {
+    const promptRows = options.filter((option) =>
+      /promptOption|promptExpandableNode/i.test(option?.getAttribute?.("data-automation-id") || "")
+    );
+    if (promptRows.length < 3) return false;
+    const categoryRows = promptRows.filter((option) =>
+      /\b(campus campaign|corporate website|direct source|job boards?|online recruiter|staffing agency|other)\b/i
+        .test(option.textContent || option.getAttribute?.("aria-label") || "")
+    );
+    return categoryRows.length >= 3;
   }
 
   function optionScoreForTarget(option, targets, hint, primaryCount) {
@@ -2344,6 +2477,10 @@
     const text = normalizeChoiceText(rawText);
     const value = normalizeChoiceText(option.getAttribute("value") || option.getAttribute("data-value") || "");
     if (!text && !value) return 0;
+    if (isLinkedIn(targets[0])) return sourceChoiceScore(rawText);
+    if (isSchool(hint)) return schoolText(rawText) === schoolText(targets[0]) ? 150 : 0;
+    const polarity = binaryChoice(targets[0]), branch = binaryChoice(rawText);
+    if (polarity && branch) return polarity === branch ? 135 : 0;
     if (/^(select|choose|please select|please choose|no results found|loading|select one)$/i.test(text)) return 0;
 
     // Same hard branch rule as the radio path: a voluntary-disclosure answer
@@ -2410,6 +2547,101 @@
     return null;
   }
 
+  function promptKey(el, key) {
+    const codes = { Enter: 13, ArrowDown: 40, ArrowRight: 39 };
+    const form = el.closest?.("form");
+    const preventSubmit = (event) => event.preventDefault();
+    form?.addEventListener("submit", preventSubmit, true);
+    try {
+      for (const type of ["keydown", "keyup"]) el.dispatchEvent(new KeyboardEvent(type, {
+        key, code: key, keyCode: codes[key], which: codes[key], bubbles: true, cancelable: true,
+      }));
+    } finally { form?.removeEventListener("submit", preventSubmit, true); }
+  }
+
+  // Explore the source tree before accepting a category. Workday often
+  // destroys the parent DOM when opening children, so restore by path rather
+  // than trying to click detached nodes from the first menu.
+  async function findLinkedInOption(session, initial, waitMs) {
+    const textOf = (o) => clean(o.textContent || o.getAttribute("aria-label") || "");
+    // Some Workday tenants mark both leaves and category rows only as
+    // `promptOption`. A source-category row is safe to probe: if it is a leaf
+    // the menu closes and can be reopened; if it is a parent its children are
+    // now available. This keeps LinkedIn reachable without treating every
+    // ordinary list option as a tree node.
+    const canBranch = (o) => isSourceBranchCandidate(o);
+    const snapshot = (list) => list.map((o) => ({
+      text: textOf(o), parent: isParentOption(o), branch: canBranch(o),
+    }));
+    let budget = 30;
+    const fallbacks = [];
+    // Workday replaces a category with a loading indicator while it fetches
+    // the child prompt. The adapter's ordinary dropdown delay is intentionally
+    // short, but a source-tree branch needs long enough to survive that fetch.
+    const branchWait = Math.max(2500, waitMs);
+    const resetTo = async (path) => {
+      await closeOpenMenu();
+      const opened = await openMenu(session.el, branchWait);
+      session.baseline = opened.baseline;
+      let list = opened.options;
+      for (const text of path) {
+        const node = list.find((o) => textOf(o) === text && canBranch(o));
+        if (!node) return [];
+        node.click?.();
+        list = await changedOptions(session, list, branchWait);
+      }
+      return list;
+    };
+    const visit = async (list, path) => {
+      const leaf = list.find((o) => !isParentOption(o) && sourceChoiceScore(textOf(o)) === 150);
+      if (leaf) return leaf;
+      for (const item of snapshot(list)) {
+        if (!item.parent && sourceChoiceScore(item.text) > 0)
+          fallbacks.push({ path: [...path], text: item.text, score: sourceChoiceScore(item.text) });
+      }
+      if (path.length >= 5) return null;
+      const parents = snapshot(list).filter((o) => o.branch)
+        // Real parent rows first. Plain promptOption leaves are only bounded
+        // probes for tenants that omit all hierarchy attributes; trying those
+        // before a visible arrow needlessly commits and reopens the menu.
+        .sort((a, b) => (Number(b.parent) - Number(a.parent)) ||
+          (sourceChoiceScore(b.text) - sourceChoiceScore(a.text)));
+      let first = true;
+      for (const parent of parents) {
+        if (--budget < 0) break;
+        if (!first) list = await resetTo(path);
+        first = false;
+        const node = list.find((o) => textOf(o) === parent.text && canBranch(o));
+        if (!node) continue;
+        node.click?.();
+        const children = await changedOptions(session, list, branchWait);
+        if (!children.length || children.every((o, i) => o === list[i])) continue;
+        const found = await visit(children, [...path, parent.text]);
+        if (found) return found;
+      }
+      return null;
+    };
+    const found = await visit(initial, []);
+    if (found) return found;
+    for (const fallback of fallbacks.sort((a, b) => b.score - a.score)) {
+      const list = await resetTo(fallback.path);
+      const option = list.find((o) => !isParentOption(o) && textOf(o) === fallback.text);
+      if (option) return option;
+    }
+    return null;
+  }
+
+  async function changedOptions(session, previous, waitMs) {
+    const deadline = Date.now() + Math.max(600, waitMs);
+    let list = [];
+    do {
+      await wait(60);
+      list = menuOptions(session);
+      if (list.length && (list.length !== previous.length || list.some((o, i) => o !== previous[i]))) return list;
+    } while (Date.now() < deadline);
+    return list;
+  }
+
   /* ---------------- the combobox writer ---------------- */
 
   /**
@@ -2423,7 +2655,7 @@
     if (value === undefined || value === null || String(value).trim() === "") return false;
 
     // Already correct — opening it again would only make the page flicker.
-    if (valuesEquivalent(el, value)) return true;
+    if (valuesEquivalent(el, value, hint) && (!isSchool(hint) || schoolText(comboboxDisplayValue(el)) === schoolText(value))) return true;
 
     const want = norm(value);
     const before = comboboxDisplayValue(el);
@@ -2436,6 +2668,9 @@
     if (backing && backing !== el) {
       if (setSelectValue(backing, value, synonyms, hint)) {
         await wait(90);
+        try {
+          el.__zapplyCommittedValue = clean(backing.options?.[backing.selectedIndex]?.textContent || backing.value || "");
+        } catch {}
         el.__zapplyNoMatch = false;
         return true;
       }
@@ -2449,7 +2684,7 @@
     session.baseline = opened.baseline;
     let options = opened.options;
 
-    const accepted = synonymsFor(synonyms, value);
+    const accepted = [...synonymsFor(synonyms, value), ...regionAliases(value, hint)];
     const targets = [String(value), want, ...accepted].filter(Boolean);
     const primaryCount = [String(value), want].filter(Boolean).length;
 
@@ -2463,28 +2698,74 @@
     };
 
     let { best, bestScore } = pick(options);
+    let searchUsed = null;
+    // An explicit Workday source tree must be drilled before using its search
+    // input. Root search only covers the currently visible categories on some
+    // tenants, so typing LinkedIn produces a spinner, restores the same root
+    // list, and repeats without ever opening Job Board / Online Recruiter.
+    const sourceTree = isLinkedIn(value) &&
+      (options.some(isParentOption) || looksLikeWorkdaySourceRoot(options));
+    if (isLinkedIn(value) && bestScore < 150 && !sourceTree) {
+      const search = findSearchInput(el, MENU.popup, MENU.baselineInputs);
+      if (search) {
+        searchUsed = search;
+        el.__zapplySearchPending = true;
+        setComboboxText(search, String(value));
+        const deadline = Date.now() + Math.max(2500, waitMs * 2);
+        do {
+          await wait(80);
+          const filtered = menuOptions(session);
+          const exact = filtered.find((o) => !isParentOption(o) && sourceChoiceScore(o.textContent) === 150);
+          if (exact) { best = exact; bestScore = 150; options = filtered; break; }
+        } while (Date.now() < deadline);
+        if (bestScore < 150) {
+          setComboboxText(search, "");
+          await wait(Math.max(700, waitMs));
+          options = menuOptions(session);
+          ({ best, bestScore } = pick(options));
+        }
+      }
+    }
+    if (isLinkedIn(value) && options.some(isSourceBranchCandidate) && (bestScore < 150 || isParentOption(best))) {
+      best = await findLinkedInOption(session, options, Math.max(2500, waitMs));
+      bestScore = best ? sourceChoiceScore(best.textContent) : 0;
+      options = menuOptions(session);
+    }
 
     // Long lists (country, state, school) are virtualised — only the first
     // rows exist in the DOM. Typing is the only way to reach the rest.
-    if (!best || bestScore < 100) {
+    if (!isLinkedIn(value) && (!best || bestScore < 100)) {
       const search = findSearchInput(el, MENU.popup, MENU.baselineInputs);
       if (search) {
+        searchUsed = search;
+        el.__zapplySearchPending = true;
         setComboboxText(search, "");
         await wait(40);
         setComboboxText(search, String(value));
-        await wait(Math.min(500, Math.max(220, waitMs / 3)));
-        const filtered = menuOptions(session);
-        if (filtered.length) {
-          const retry = pick(filtered);
-          if (retry.best && retry.bestScore >= bestScore) {
-            best = retry.best;
-            bestScore = retry.bestScore;
-            options = filtered;
+        // Some Workday school prompts only request results after Enter.
+        if (isSchool(hint)) promptKey(search, "Enter");
+        const deadline = Date.now() + Math.max(1200, waitMs * 2);
+        do {
+          await wait(80);
+          if (isSchool(hint)) {
+            const committed = renderedChoiceText(el) || el.getAttribute("aria-valuetext") || el.getAttribute("data-value");
+            if (committed && schoolText(committed) === schoolText(value)) {
+              el.__zapplyCommittedValue = clean(committed);
+              el.__zapplySearchPending = false;
+              await closeOpenMenu();
+              return true;
+            }
           }
-        }
+          const filtered = menuOptions(session);
+          const retry = pick(filtered);
+          if (retry.best && (!best || !document.contains(best) || retry.bestScore >= bestScore)) {
+            best = retry.best; bestScore = retry.bestScore; options = filtered;
+          }
+          if (best && document.contains(best) && bestScore >= 100) break;
+        } while (Date.now() < deadline);
         // A filter that matched nothing must be cleared, or the control is
         // left holding junk text after we close it.
-        if (!best || bestScore < 55) {
+        if (!best || !document.contains(best) || bestScore < 55) {
           setComboboxText(search, "");
           await wait(180);
           options = menuOptions(session);
@@ -2494,12 +2775,12 @@
       }
     }
 
-    if (!best || bestScore < 55) {
+    if (!isLinkedIn(value) && !isSchool(hint) && (!best || bestScore < 55)) {
       const drilled = await drillForOption(session, options, targets, value, waitMs, hint);
       if (drilled) { best = drilled.option; bestScore = drilled.score; }
     }
 
-    if (!best || bestScore < 55) {
+    if (!best || !document.contains(best) || bestScore < 55 || isParentOption(best)) {
       // The menu opened and none of its choices fit. Reopening it later cannot
       // change that, so flag the control: the reconcile pass skips it and sends
       // it straight to the user instead of opening the same list a second time.
@@ -2509,26 +2790,29 @@
       // that one does deserve a second try once the parent is answered.
       const realOptions = options.filter((o) => !isPlaceholderChoice(o.textContent || ""));
       el.__zapplyNoMatch = realOptions.length >= 3;
+      if (searchUsed) setComboboxText(searchUsed, "");
       await closeOpenMenu();
+      el.__zapplySearchPending = false;
       return false;
     }
     el.__zapplyNoMatch = false;
+
+    const bestLabel = clean(best.textContent || best.getAttribute("aria-label") || best.getAttribute("data-value") || "");
 
     try { best.scrollIntoView?.({ block: "nearest" }); } catch {}
     try { fire(best, "pointerdown", "mousedown", "pointerup", "mouseup"); } catch {}
     try { best.click?.(); } catch {}
     await wait(90);
 
-    // Some listboxes commit on Enter rather than click, but only try that while
-    // the menu is genuinely still open — pressing Enter on a closed Workday
-    // control submits the page.
+    // The key listener belongs to the search input, not the option. Only
+    // send Enter while this menu is still open; never press it on a closed form.
     if (menusOpen() && document.contains(best)) {
-      try {
-        best.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true }));
-        best.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true }));
-      } catch {}
-      await wait(90);
+      const owner = searchUsed || findSearchInput(el, MENU.popup, MENU.baselineInputs) || el;
+      try { owner.focus?.({ preventScroll: true }); promptKey(owner, "Enter"); } catch {}
+      await wait(120);
     }
+    const committedBeforeClose = !menusOpen() && el.getAttribute("aria-expanded") !== "true";
+    if (committedBeforeClose) el.__zapplySearchPending = false;
 
     const bestText = normalizeChoiceText(best.textContent || best.getAttribute("aria-label") || "");
     const chosenInPopup = (MENU.popup || document).querySelector?.('[aria-selected="true"], [aria-checked="true"]');
@@ -2555,12 +2839,22 @@
     const shown = normalizeChoiceText(comboboxDisplayValue(el));
     const wantNorm = normalizeChoiceText(want);
 
-    return Boolean(
+    const acceptedSelection = Boolean(
       (shown && shown !== normalizeChoiceText(before) &&
         (shown.includes(bestText) || bestText.includes(shown) || shown.includes(wantNorm))) ||
       (shown && (shown === bestText || shown === wantNorm)) ||
       (chosenText && (chosenText === bestText || chosenText.includes(bestText)))
     );
+    if (searchUsed && !committedBeforeClose && !renderedChoiceText(el) && !backingHasValue(el)) {
+      setComboboxText(searchUsed, "");
+      await closeOpenMenu();
+      return false;
+    }
+    if (acceptedSelection) {
+      el.__zapplyCommittedValue = bestLabel;
+      el.__zapplySearchPending = false;
+    }
+    return acceptedSelection;
   }
 
   /* ------------------------------------------------------------------ */
@@ -2742,7 +3036,7 @@
 
     // A widget still showing "Select…" is unanswered, whatever half-typed
     // search text happens to be sitting in its input.
-    if (showsPlaceholder(el)) return "";
+    if (showsPlaceholder(el) || el.__zapplySearchPending || el.getAttribute("aria-expanded") === "true") return "";
 
     const semantic =
       el.getAttribute("aria-valuetext") ||
@@ -2757,14 +3051,7 @@
       if (t && !isPlaceholderChoice(t)) return t;
     }
 
-    const activeId = el.getAttribute("aria-activedescendant");
-    if (activeId) {
-      const active = document.getElementById(activeId);
-      if (active) {
-        const t = clean(active.textContent);
-        if (t) return t;
-      }
-    }
+    // aria-activedescendant identifies keyboard focus, not a committed answer.
 
     // A button whose text is short and not a placeholder is the value itself —
     // unless it is just repeating the question. Workday renders an unset
@@ -2806,7 +3093,7 @@
     const isCustom = el.getAttribute("role") === "checkbox";
     const name = el.getAttribute("name");
     const customContainer = el.closest("fieldset, [role='group']");
-    const group = isCustom
+    const group = isStandaloneConsent(el) ? [el] : isCustom
       ? (name
           ? Array.from(document.querySelectorAll(`[role="checkbox"][name="${CSS.escape(name)}"]`))
           : Array.from(customContainer?.querySelectorAll('[role="checkbox"]') || [el]))
@@ -3115,7 +3402,7 @@
   function verifyCheckboxEquivalent(el, expected) {
     const name = el.getAttribute("name");
     const role = el.getAttribute("role");
-    const group = role === "checkbox"
+    const group = isStandaloneConsent(el) ? [el] : role === "checkbox"
       ? (name ? Array.from(document.querySelectorAll(`[role="checkbox"][name="${CSS.escape(name)}"]`)) : Array.from(el.closest('fieldset,[role="group"]')?.querySelectorAll('[role="checkbox"]') || [el]))
       : (name ? Array.from(document.querySelectorAll(`input[type="checkbox"][name="${CSS.escape(name)}"]`)) : [el]);
     const raw = String(expected).trim();
@@ -3135,7 +3422,7 @@
     const type = (el.type || "").toLowerCase();
     if (role === "checkbox" || type === "checkbox") {
       const name = el.getAttribute("name");
-      const group = name
+      const group = isStandaloneConsent(el) ? [el] : name
         ? Array.from(document.querySelectorAll(role === "checkbox" ? `[role="checkbox"][name="${CSS.escape(name)}"]` : `input[type="checkbox"][name="${CSS.escape(name)}"]`))
         : [el];
       return group.some((x) => role === "checkbox" ? x.getAttribute("aria-checked") === "true" : x.checked);
@@ -3149,7 +3436,7 @@
       const opt = el.options[el.selectedIndex];
       return Boolean(opt?.value) && !PLACEHOLDER_RE.test(normalizeChoiceText(opt.textContent).trim());
     }
-    if (el.tagName === "BUTTON" || role === "button" || role === "combobox" || el.getAttribute("aria-haspopup")) {
+    if (el.tagName === "BUTTON" || role === "button" || fieldKind(el) === "select") {
       // Read what the widget shows first, then what it would actually submit.
       // A react-select posts a hidden input holding an internal option id, so
       // the second check is the only proof some questions are answered at all.
@@ -3207,6 +3494,7 @@
     retypeValue, flaggedInvalid, isRequired, opensFilePicker,
     choiceButtonGroup, isChoiceButton, choiceButtonSelected, choiceButtonGroupValue,
     deriveLabel,
+    isStandaloneConsent,
     groupLabel,
     sectionContext,
     repeatedRowKey,

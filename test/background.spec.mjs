@@ -26,7 +26,7 @@ const check = (name, pass, detail = "") => {
 };
 
 /** Boots background.js against a fake browser and a fake API. */
-async function boot({ storage = {}, savedAnswers = [] } = {}) {
+async function boot({ storage = {}, savedAnswers = [], bootstrapStatus = 200, syncReply, onSync, profiles = [{ _id: "p1", isDefault: true }] } = {}) {
   const calls = [];
   let listener = null;
 
@@ -59,12 +59,13 @@ async function boot({ storage = {}, savedAnswers = [] } = {}) {
   const fetchStub = async (url, options = {}) => {
     calls.push({ url: String(url), method: options.method || "GET", body: options.body });
     if (String(url).includes("/api/extension/bootstrap")) {
+      if (bootstrapStatus !== 200) return { ok: false, status: bootstrapStatus, json: async () => ({ error: "Refresh unavailable" }) };
       return {
         ok: true, status: 200,
         json: async () => ({
           data: {
             user: { premium: false }, settings: {}, activeProfileId: "p1",
-            profiles: [{ _id: "p1", isDefault: true }],
+            profiles,
             responses: savedAnswers,
             syncedAt: "2026-08-26T00:00:00.000Z",
           },
@@ -88,6 +89,9 @@ async function boot({ storage = {}, savedAnswers = [] } = {}) {
       .trim()
       .slice(0, 180);
     const responses = body.responses ?? [];
+    if (responses.length > 200) return { ok: false, status: 400, json: async () => ({ error: "Maximum 200 answers" }) };
+    if (onSync) await onSync(body);
+    if (syncReply) return { ok: true, status: 200, json: async () => ({ data: syncReply(body, normalize) }) };
     return {
       ok: true, status: 200,
       json: async () => ({
@@ -272,6 +276,60 @@ const ANSWERS = [
   const { send } = await boot({ storage: { token: "t", apiBase: "https://zapply.test" }, savedAnswers: ANSWERS });
   const res = await send({ type: "ZAPPLY_GET_SESSION", force: true });
   check("the content script receives the saved answers", res?.data?.responses?.length === 2, JSON.stringify(res?.data?.responses));
+}
+
+/* Reported failures: held queue, oversized queues, stale refresh, concurrent edits. */
+{
+  const {send,calls,storage}=await boot({storage:{token:"t",heldAnswers:[{question:"Why this team?",answer:"Interesting work"}]},savedAnswers:ANSWERS});
+  const res=await send({type:"ZAPPLY_SYNC_PENDING"});
+  check("Sync now uploads answers shown as held in the popup",res.ok && res.data.responsesSaved===1);
+  check("held answers clear only after moving to the confirmed upload queue",storage.heldAnswers.length===0 && !storage.pendingResponses);
+}
+{
+  const pendingResponses=Array.from({length:235},(_,i)=>({question:`Custom application question ${i}?`,answer:`Answer ${i}`}));
+  const {send,calls,storage}=await boot({storage:{token:"t",pendingResponses}});
+  const res=await send({type:"ZAPPLY_SYNC_PENDING"});
+  const batches=calls.filter(c=>c.method==="POST").map(c=>JSON.parse(c.body).responses.length);
+  check("large queues upload as 100/100/35",JSON.stringify(batches)===JSON.stringify([100,100,35]),JSON.stringify(batches));
+  check("all large-queue answers are confirmed and cleared",res.ok && res.data.responsesSaved===235 && !storage.pendingResponses);
+}
+{
+  const {send}=await boot({storage:{token:"t",session:{profile:{_id:"p1"},responses:ANSWERS},sessionAt:1},bootstrapStatus:503});
+  const res=await send({type:"ZAPPLY_SYNC_PENDING"});
+  check("a failed refresh cannot report a cached session as a successful sync",res.ok===false && /Refresh unavailable/.test(res.error));
+}
+{
+  let send;
+  const env=await boot({storage:{token:"t",pendingResponses:[{question:"Notice period?",answer:"2 weeks"}]},onSync:async()=>{
+    await send({type:"ZAPPLY_QUEUE_RESPONSES",responses:[{question:"Notice period?",answer:"30 days"}]});
+  }});send=env.send;
+  const res=await send({type:"ZAPPLY_SYNC_PENDING"});
+  check("an edit during upload survives acknowledgement of the older answer",env.storage.pendingResponses?.[0]?.answer==="30 days");
+  check("Sync reports newer edits that remain pending",res.data?.pending===1);
+}
+{
+  const pendingResponses=[{question:"First question?",answer:"a"},{question:"Second question?",answer:"b"}];
+  const {send,storage}=await boot({storage:{token:"t",pendingResponses},syncReply:(body,n)=>({responsesSaved:1,savedKeys:[n(body.responses[0].question)]})});
+  const res=await send({type:"ZAPPLY_SYNC_PENDING"});
+  check("partial rejection is reported as incomplete",res.ok===false && /remain pending/.test(res.error));
+  check("only confirmed questions are removed",storage.pendingResponses?.length===1 && storage.pendingResponses[0].question==="Second question?");
+}
+{
+  const {send,calls}=await boot({storage:{token:"t",pendingResponses:[{question:"Notice period?",answer:"30 days"}]},onSync:async()=>await new Promise(r=>setTimeout(r,10))});
+  const [a,b]=await Promise.all([send({type:"ZAPPLY_SYNC_PENDING"}),send({type:"ZAPPLY_SYNC_PENDING"})]);
+  check("simultaneous sync clicks share one upload",a.ok && b.ok && calls.filter(c=>c.method==="POST").length===1);
+}
+{
+  const {send,calls,storage}=await boot({storage:{token:"t",heldAnswers:[{question:"Why this role?",answer:"Fit"}]}});
+  await send({type:"ZAPPLY_SAVE_HELD"});
+  check("Save keeps answers local until explicit Sync",!calls.some(c=>c.method==="POST") && storage.pendingResponses?.length===1);
+  await send({type:"ZAPPLY_SYNC_PENDING"});
+  check("explicit Sync uploads a locally saved answer",calls.some(c=>c.method==="POST"));
+}
+{
+  const {send}=await boot({storage:{token:"t",selectedProfileId:"p2"},profiles:[{_id:"p1",isDefault:true},{_id:"p2",education:[{school:"Selected Profile School"}]}]});
+  const res=await send({type:"ZAPPLY_GET_SESSION",force:true});
+  check("refresh preserves the selected profile and its school",res.data?.profile?._id==="p2" && res.data.profile.education[0].school==="Selected Profile School");
 }
 
 const failed = results.filter((r) => !r.pass);
