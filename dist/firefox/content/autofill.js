@@ -391,7 +391,7 @@
    * from the scan so widening it never means answering the page's furniture.
    */
   const PAGE_CHROME_RE =
-    /(^|[\s\-_])(site-?search|searchform|search-?form|newsletter|subscribe|cookie|login|log-?in|sign-?in|signin|locale|language|currency|promo-?code|coupon|chat|livechat|support-?widget)([\s\-_]|$)/i;
+    /(^|[\s\-_])(site-?search|searchform|search-?form|newsletter|subscribe|cookie|consent|gdpr|login|log-?in|sign-?in|signin|locale|language|currency|promo-?code|coupon|chat|livechat|support-?widget)([\s\-_]|$)/i;
 
   /** A button that changes the form rather than answering a question. */
   const ACTION_BUTTON_RE =
@@ -840,9 +840,8 @@
             if (el.type === "radio" || el.type === "checkbox" ||
                 el.getAttribute("role") === "radio" || el.getAttribute("role") === "checkbox") {
               const role = el.getAttribute("role") || el.type;
-              const standalone = M.isStandaloneConsent?.(el);
-              const name = standalone ? "" : el.getAttribute("name");
-              const container = standalone ? null : el.closest("fieldset, [role='radiogroup'], [role='group']");
+              const name = el.getAttribute("name");
+              const container = el.closest("fieldset, [role='radiogroup'], [role='group']");
               if (container && !container.dataset.zapplyGroupKey) {
                 container.dataset.zapplyGroupKey = `g${Math.random().toString(36).slice(2)}`;
               }
@@ -889,16 +888,6 @@
         deduped[deduped.indexOf(existing)] = field;
         byControl.set(key, field);
       }
-    }
-
-    // Some portals use a second source control rather than a nested menu.
-    // Only the immediate follow-up in the same form inherits the source rule.
-    for (let i = 1; i < deduped.length; i++) {
-      const current = deduped[i], previous = deduped[i - 1];
-      const own = String(current.label || "").split("|")[0].trim();
-      if (!current.rule && previous.rule?.key === "howDidYouHear" &&
-          /^(?:please\s+)?(?:specify|source details?|source name|sub[- ]?category)\b/i.test(own) &&
-          current.el.closest("form") === previous.el.closest("form")) current.rule = previous.rule;
     }
 
     assignRowIndexes(deduped, EXPERIENCE_KEYS, ["currentCompany", "currentTitle", "responsibilities"]);
@@ -1217,7 +1206,7 @@
    * offered back as a new unsaved answer. Every fill re-queued everything it
    * had filled.
    */
-  const PROGRAMMATIC_LEDGER_TTL = 120_000;
+  const PROGRAMMATIC_LEDGER_TTL = 15_000;
 
   function provenanceKey(field, answer) {
     let question = "";
@@ -1255,16 +1244,6 @@
   function clearProgrammaticAnswer(field, answer) {
     const key = provenanceKey(field, answer);
     if (key) state.programmaticAnswers.delete(key);
-  }
-
-  function clearProgrammaticQuestion(field) {
-    let question = "";
-    try { question = primaryQuestion(field); } catch {}
-    const prefix = `${answerKey(question || field?.label || field?.el?.name || field?.el?.id || "")}::`;
-    if (prefix === "::") return;
-    for (const key of state.programmaticAnswers.keys()) {
-      if (key.startsWith(prefix)) state.programmaticAnswers.delete(key);
-    }
   }
 
   function eachInGroup(el, fn) {
@@ -1445,10 +1424,9 @@
       // though they had answered it by hand. Recorded on every member of a
       // choice group, because the option actually clicked is rarely the element
       // the field is anchored to.
+      const written = typeof value === "object" ? null : String(value);
       let settled = "";
       try { settled = String(readValue(field) ?? "").trim(); } catch {}
-      if (!settled) settled = String(el.__zapplyCommittedValue ?? "").trim();
-      const written = settled || (typeof value === "object" ? null : String(value));
       eachInGroup(el, (member) => {
         member.__zapplyWrittenValue = written;
         // The sweep compares against this to decide whether a value changed. A
@@ -1462,18 +1440,14 @@
       // DOM nodes are disposable on modern ATS pages. Keep provenance by
       // question+answer as well, so a trusted trailing event on a freshly
       // rendered node cannot turn our own fill into a pending manual answer.
-      // Record what the ATS committed, not only what was requested. A source
-      // menu may legitimately turn LinkedIn into its available fallback
-      // "Social Media"; storing LinkedIn here made the later sweep misclassify
-      // Social Media as a new manual answer.
-      rememberProgrammaticAnswer(field, written ?? value);
+      rememberProgrammaticAnswer(field, value);
     }
 
     // Each setter self-verifies; verifyField is an independent second opinion.
     // A field counts as filled when the strict check passes, or when the setter
     // succeeded and the control now visibly holds something.
     const verified = verifyField(field, value);
-    const filled = field.kind === "select" ? (ok && M.hasValue(el)) : (verified || (ok && M.hasValue(el)));
+    const filled = verified || (ok && M.hasValue(el));
     setTimeout(() => endProgrammatic(el), 0);
     return Boolean(filled);
   }
@@ -1530,8 +1504,7 @@
     // that is already in the form — whether the applicant typed it, the portal
     // prefilled it, or an earlier run put it there. Running autofill again
     // therefore only ever fills what is still blank.
-    const refreshToday = ["selfIdDate", "todayDate"].includes(field.rule?.key);
-    if (kind !== "file" && !refreshToday && M.hasValue(el) && settings?.overwriteExisting !== true) {
+    if (kind !== "file" && M.hasValue(el) && settings?.overwriteExisting !== true) {
       return { status: "already", key: field.rule?.key ?? null };
     }
 
@@ -1572,21 +1545,6 @@
       /\b(e-?mail|phone|mobile|telephone|country\s*code|area\s*code|extension|first\s*name|last\s*name|middle\s*name|full\s*name|date\s*of\s*birth|address\s*line|postal|zip\s*code)\b/i
         .test(String(field?.label ?? "").split("|")[0]);
 
-    // Eligibility saved answers require the exact question, including negative
-    // wording and country. They only fill a missing explicit profile answer.
-    if (rule?.eligibility) {
-      if (profileValue) return { status: "fill", key: rule.key, value: profileValue, rule, source: "profile" };
-      const key = (q) => String(q ?? "").normalize("NFKC").toLowerCase()
-        .replace(/authoriz/g, "authoris").replace(/[’']/g, "").replace(/[^a-z0-9]+/g, " ").trim();
-      const question = key(primaryQuestion(field));
-      const exact = canReuse && (state.session?.responses ?? []).find((r) => r.answer &&
-        [r.question, ...(r.aliases ?? [])].some((q) => key(q) === question));
-      return exact ? { status: "fill", key: "saved-answer", value: exact.answer, rule, source: "saved" }
-        : { status: "skipped", key: rule.key };
-    }
-    if (rule?.profileFirst && profileAnswers) {
-      return { status: "fill", key: rule.key, value: profileValue, rule, source: "profile" };
-    }
     if (saved?.answer && !profileOnly && !protectedIdentity) {
       return { status: "fill", key: "saved-answer", value: saved.answer, rule, source: "saved" };
     }
@@ -1690,11 +1648,10 @@
    * These questions are answerable from the profile or not at all.
    */
   const SELF_ID_LABEL_RE =
-    /(voluntary\s+self[-\s]?identification|self[-\s]?identification\s+(?:of\s+)?disabilit|disabilit(?:y|ies)\s+self[-\s]?identification|form\s*cc-?305|cc-?305|section\s*503|omb\s*control\s*number\s*1250|voluntary\s+disclosures?|disability\s+disclosure|equal\s+employment\s+opportunity|eeo)/i;
+    /(voluntary\s+self[-\s]?identification|self[-\s]?identification\s+of\s+disability|form\s*cc-?305|cc-?305|section\s*503|omb\s*control\s*number\s*1250|voluntary\s+disclosure|equal\s+employment\s+opportunity|eeo)/i;
 
   function offLimitsToAi(field) {
-    if (field.rule?.identity || field.rule?.eeo || field.rule?.blank || field.rule?.profileOnly || field.rule?.key === "school") return true;
-    if (/\bsponsor|\bwork\s*authori[sz]|\bauthori[sz]\w*\b.{0,50}\bwork\b|\bvisa\b/i.test(field.label || "")) return true;
+    if (field.rule?.identity || field.rule?.eeo || field.rule?.blank) return true;
     if (SELF_ID_LABEL_RE.test(field.label || "")) return true;
     try {
       const section = M.visibleText(field.el.closest("fieldset, section, [role='group']"));
@@ -3432,7 +3389,6 @@
       // The whole group, so choosing a different radio with the keyboard or the
       // mouse counts as taking over from the fill however the group is wired.
       releaseGroupToUser(field.el);
-      clearProgrammaticQuestion(field);
     };
     // Any of these can only come from a real person: the browser marks events
     // it synthesises for page scripts as untrusted. A trusted `input` is the
@@ -3447,8 +3403,8 @@
       field.el.addEventListener(type, releaseToUser, true)
     );
 
-    field.el.addEventListener("input", (event) => {
-      if (event?.isTrusted && !isGroupProgrammatic(field.el)) field.el.__zapplyUserEdited = true;
+    field.el.addEventListener("input", () => {
+      if (!isProgrammatic(field.el)) field.el.__zapplyUserEdited = true;
     }, true);
     field.el.addEventListener("blur", capture, true);
     field.el.addEventListener("change", capture);
@@ -4018,9 +3974,6 @@
   // Test hook. Only ever attached when a harness sets the flag before the
   // content script loads, so nothing is exposed to real pages.
   if (window.__ZAPPLY_TEST === true) {
-    window.__zapply = {
-      run, collectFields, planField, state, M, RULES,
-      applyValue, captureOn, recordAnswer, queueAnswersFromForm, readValue,
-    };
+    window.__zapply = { run, collectFields, planField, state, M, RULES };
   }
 })();
