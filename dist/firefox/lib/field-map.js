@@ -340,39 +340,46 @@
    * US application expects MM/DD/YYYY. Shared by `todayDate` and `selfIdDate`
    * so the two can never drift apart.
    */
-  const todayFor = (el, fallbackSeparator = "/") => {
+  const todayFor = (el) => {
     const now = new Date();
-    const yyyy = String(now.getFullYear());
+    const yyyy = now.getFullYear();
     const mm = String(now.getMonth() + 1).padStart(2, "0");
     const dd = String(now.getDate()).padStart(2, "0");
     const type = (el?.getAttribute?.("type") || el?.type || "").toLowerCase();
-    const hint = [el?.getAttribute?.("placeholder"), el?.getAttribute?.("aria-label"),
-      el?.getAttribute?.("name"), el?.getAttribute?.("data-automation-id")].filter(Boolean).join(" ");
     if (type === "date") return `${yyyy}-${mm}-${dd}`;
     if (type === "month") return `${yyyy}-${mm}`;
-    const yearPart = /year|yyyy/i.test(hint);
-    const dayPart = /day|\bdd\b/i.test(hint);
-    const monthPart = /month|\bmm\b/i.test(hint);
-    if (yearPart && !monthPart && !dayPart) return yyyy;
-    if (dayPart && !monthPart && !yearPart) {
-      return el?.tagName === "SELECT" ? String(now.getDate()) : dd;
-    }
-    if (monthPart && !dayPart && !yearPart) {
-      return el?.tagName === "SELECT" ? MONTH_NAMES[now.getMonth()] : mm;
-    }
-    const format = hint.match(/(mm|dd|yyyy)\s*([-/.])\s*(mm|dd|yyyy)\s*\2\s*(mm|dd|yyyy)/i);
-    if (format) {
-      const parts = { mm, dd, yyyy };
-      return [format[1], format[3], format[4]].map((part) => parts[part.toLowerCase()]).join(format[2]);
-    }
-    const separator = ["-", "/", "."].includes(fallbackSeparator) ? fallbackSeparator : "/";
-    return `${mm}${separator}${dd}${separator}${yyyy}`;
+    return `${mm}/${dd}/${yyyy}`;
   };
 
   const dateForField = (raw, el) => {
     const parsed = parseProfileDate(raw);
-    if (!parsed) return null;
     const type = String(el?.type || "").toLowerCase();
+
+    if (!parsed) {
+      /**
+       * Not a calendar date at all — "Immediately", "ASAP", "2 weeks notice".
+       *
+       * `availableStartDate` is the one date-shaped field the profile lets the
+       * applicant answer in their own words, because "when can you start" is
+       * routinely asked as a plain text box, not a picker, and "Immediately"
+       * is a completely valid answer to it. `parseProfileDate` only recognises
+       * actual calendar dates, so every non-date answer came back `null` here
+       * and the rule then reported the field as having nothing to give it —
+       * which is how a profile that plainly said "Immediately" left a
+       * required "What date are you available to start?" box empty and
+       * flagged as needing the applicant, right next to a Saturday/Sunday
+       * question the profile *did* answer.
+       *
+       * A native date/month picker still gets nothing rather than garbage —
+       * "Immediately" cannot become a calendar value, so those are left for
+       * the applicant exactly as before. A plain text box, including a
+       * textarea, gets the literal words instead of losing the answer.
+       */
+      if (type === "date" || type === "month") return null;
+      const literal = String(raw ?? "").trim();
+      return literal || null;
+    }
+
     if (type === "month") return parsed.month ? `${parsed.year}-${parsed.month}` : null;
     if (type === "date") return parsed.month ? `${parsed.year}-${parsed.month}-${parsed.day || "01"}` : null;
 
@@ -479,20 +486,37 @@
    * Phrasings that ask whether the applicant can work *without* sponsorship,
    * which is the inverse of whether they require it.
    */
-  // Eligibility comes from explicit answers, never nationality or a status
-  // substring ("not a citizen" used to imply Yes).
-  const yesNo = (value) => {
-    if (value === true || value === 1) return "Yes";
-    if (value === false || value === 0) return "No";
-    const text = String(value ?? "").trim();
-    if (/^(yes|true|1)(?:$|[, .])/i.test(text)) return "Yes";
-    if (/^(no|false|0)(?:$|[, .])/i.test(text)) return "No";
-    return null;
+  /**
+   * Work eligibility the profile already implies.
+   *
+   * An applicant who has recorded that they are a citizen or a permanent
+   * resident has told us they are authorised and need no sponsorship — asking
+   * them to answer it a second time in a separate box, and leaving the field
+   * blank until they do, is why so many eligibility questions came up empty and
+   * then got filled from somewhere worse.
+   *
+   * This is derivation, not inference: only statuses that settle the question
+   * outright are used, and an explicit stored answer always wins over it.
+   */
+  const SETTLED_STATUS =
+    /\b(u\.?s\.?\s*)?citizen\b|\bnational\b|\bpermanent\s*resident\b|\bgreen\s*card\b|\bcitizenship\b|\bindefinite\s*leave\b|\bright\s*to\s*work\b/i;
+
+  const authorizedFor = (p) => {
+    const stored = W(p).authorizedToWork;
+    if (stored) return stored;
+    const status = `${W(p).workAuthType ?? ""} ${W(p).visaStatus ?? ""} ${W(p).citizenship ?? ""}`;
+    return SETTLED_STATUS.test(status) ? "Yes" : null;
   };
-  const authorizedFor = (p) => yesNo(W(p).authorizedToWork);
-  const sponsorshipFor = (p) => yesNo(W(p).requireSponsorship);
+
+  const sponsorshipFor = (p) => {
+    const stored = W(p).requireSponsorship;
+    if (stored) return stored;
+    const status = `${W(p).workAuthType ?? ""} ${W(p).visaStatus ?? ""} ${W(p).citizenship ?? ""}`;
+    return SETTLED_STATUS.test(status) ? "No" : null;
+  };
+
   const SPONSORSHIP_INVERTED =
-    /\bwithout\b.{0,120}\b(?:sponsor|visa\s+(?:support|assistance))|\b(?:not|no|never)\s+(?:now\s+or\s+in\s+the\s+future\s+)?(?:require|need|requiring|needing)\b.{0,100}\b(?:sponsor|visa\s+(?:support|assistance))|\b(?:independent|free)\s+of\b.{0,70}\b(?:sponsor|visa\s+(?:support|assistance))/i;
+    /\bwithout\s+(?:the\s+need\s+for\s+)?(?:any\s+)?(?:a\s+)?(?:visa\s+|employment\s+|work\s+|immigration\s+)?sponsor/i;
 
   /**
    * The voluntary self-identification block — CC-305 and its equivalents.
@@ -521,38 +545,7 @@
   const denyOwn = (re) => (label) => re.test(ownLabel(label));
 
   const SELF_ID_RE =
-    /(voluntary\s+self[-\s]?identification|self[-\s]?identification\s+(?:of\s+)?disabilit|disabilit(?:y|ies)\s+self[-\s]?identification|form\s*cc-?305|cc-?305|section\s*503|omb\s*control\s*number\s*1250|voluntary\s+disclosures?|disability\s+disclosure)/i;
-
-  /**
-   * Workday often leaves the disclosure heading out of the input's accessible
-   * name. Inspect the nearest small section too, without ever treating the
-   * entire application as a disclosure block and changing an unrelated date.
-   */
-  const inSelfIdSection = (el) => {
-    let node = el;
-    for (let depth = 0; node && depth < 9; depth++, node = node.parentElement) {
-      if (typeof document !== "undefined" &&
-          (node === document.body || node === document.documentElement)) break;
-      const attrs = ["aria-label", "data-automation-id", "id", "class"]
-        .map((name) => node.getAttribute?.(name) || "").join(" ");
-      if (SELF_ID_RE.test(attrs)) return true;
-      let heading = "";
-      try {
-        heading = node.querySelector?.("legend, h1, h2, h3, h4, [role='heading'], [data-automation-id*='title' i]")?.textContent || "";
-      } catch {}
-      if (SELF_ID_RE.test(heading)) return true;
-      let controls = 99;
-      try {
-        controls = node.querySelectorAll?.("input, select, textarea, [role='combobox'], [role='radio'], [role='checkbox']")?.length ?? 99;
-      } catch {}
-      const text = String(node.textContent || "").replace(/\s+/g, " ").trim();
-      if (controls <= 15 && text.length <= 5000 && SELF_ID_RE.test(text)) return true;
-      if (node.tagName === "FORM") break;
-    }
-    return false;
-  };
-  const selfIdRequirement = (label, el) =>
-    SELF_ID_RE.test(String(label ?? "")) || inSelfIdSection(el);
+    /(voluntary\s+self[-\s]?identification|self[-\s]?identification\s+of\s+disability|form\s*cc-?305|cc-?305|section\s*503|omb\s*control\s*number\s*1250|voluntary\s+disclosure)/i;
 
   const RULES = [
     /* ---------------- Voluntary self-identification (CC-305) ----------------
@@ -570,7 +563,7 @@
       key: "selfIdName",
       // Above fullName (6) and signature (8) so the section-aware rule wins.
       weight: 19,
-      require: selfIdRequirement,
+      require: SELF_ID_RE,
       match: [/^name$/i, /\byour\s*name\b/i, /\b(full|legal)\s*name\b/i, /\bname\b/i],
       deny: [
         THIRD_PARTY,
@@ -591,16 +584,15 @@
        */
       key: "selfIdDate",
       weight: 19,
-      require: selfIdRequirement,
-      match: [/^date$/i, /\bdate\b/i, /^(month|day|year|mm|dd|yyyy)(?:\b|$)/i,
-        /^(?:mm|dd|yyyy)(?:\s*[-/.]\s*(?:mm|dd|yyyy)){1,2}$/i],
-      matchOwn: true,
-      deny: [denyOwn(THIRD_PARTY), denyOwn(/\b(start|end|from|to|birth|dob|graduation|grad|hire|termination|expiry|expiration|issued|available|availability|joining|last\s*working)\b/i),
-        /\b(?:birth|dob|graduation|hire|termination|expiry|expiration)\b|\b(?:start|end|from|to)\s+(?:date|month|year|day)\b/i],
+      require: SELF_ID_RE,
+      match: [/^date$/i, /\bdate\b/i],
+      deny: [
+        THIRD_PARTY,
+        /\b(start|end|from|to|birth|dob|graduation|grad|hire|termination|expiry|expiration|issued|available|availability|joining|last\s*working)\b/i,
+      ],
       identity: true,
-      type: ["text", "date", "select", "number"],
-      options: MONTH_SYNONYMS,
-      value: (p, el) => todayFor(el, "-"),
+      type: ["text", "date"],
+      value: (p, el) => todayFor(el),
     },
     {
       /**
@@ -960,8 +952,6 @@
       deny: [THIRD_PARTY, /united\s*states\b.*country|veteran|marital|employment\s*status/i,
              denyOwn(/\bcounty\b/i)],
       type: ["text", "select"],
-      profileOnly: true,
-      profileFirst: true,
       value: (p) => P(p).state,
     },
     {
@@ -1260,16 +1250,11 @@
     /* ---------------- Education ---------------- */
     {
       key: "school",
-      profileFirst: true,
-      matchOwn: true,
       weight: 10,
       match: [/\b(school|university|college|institution)\b/i],
-      deny: [denyOwn(/high\s*school\s*only|\b(?:did|do|are|have|were|will|family|first member|graduated)\b.*\?/i)],
+      deny: [/high\s*school\s*only|graduated\b.*\?/i],
       type: ["text", "select"],
-      value: (p, _el, _label, index) => {
-        const row = latestSchool(p, index);
-        return row.school || row.schoolName || row.institution || row.university || row.college || null;
-      },
+      value: (p, _el, _label, index) => latestSchool(p, index).school,
     },
     {
       key: "degree",
@@ -1376,58 +1361,104 @@
 
     /* ---------------- Work eligibility ---------------- */
     {
-      key: "authorizedToWork", weight: 12, profileOnly: true, eligibility: true, matchOwn: true,
-      match: [/\b(?:authori[sz]|eligib)\w*\b.{0,45}\bwork\b/i, /\bwork\s*authori[sz]\w*\b/i,
-        /\blegally\s*(entitled|permitted|allowed)\s*to\s*work\b/i, /\bright\s*to\s*work\b/i,
-        /\b(?:permission|permit|eligibility|authorization|authorisation)\b.{0,45}\b(?:to\s+)?work\b/i,
-        /\b(?:legally|lawfully)\b.{0,45}\b(?:work|employment)\b/i,
-        /\b(?:authori[sz]ed|eligible)\s+for\s+(?:work|employment)\b/i],
-      deny: [denyOwn(/sponsor|\b(?:type|status|document|proof|explain|describe|which|what kind)\b/i)],
-      type: ["select", "radio", "text", "checkbox"],
-      value: (p, el, label) => {
-        const answer = authorizedFor(p);
-        if (!answer) return null;
-        return /\b(?:not|never|un)\s*authori[sz]|\b(?:not\s+eligible|ineligible|unable)\b/i.test(ownLabel(label))
-          ? (answer === "Yes" ? "No" : "Yes") : answer;
-      },
-      options: { Yes: ["yes", "true", "authorized", "authorised", "i am authorized", "i am authorised"],
-        No: ["no", "false", "not authorized", "not authorised"] },
+      /**
+       * Answered only from the profile.
+       *
+       * These used to fall back to "Yes" — authorised to work, over 18, willing
+       * to relocate, willing to take a drug test and a background check — and
+       * "No" for prior employment. An application is a document the applicant
+       * signs, and those are claims about their legal status and their consent.
+       * Filling them from nothing puts words in their mouth on a form an
+       * employer will hold them to, so a profile that has not answered leaves
+       * the field blank and visibly needing them.
+       */
+      key: "authorizedToWork",
+      weight: 12,
+      match: [
+        /\b(legally\s*)?(authoriz|eligib)\w*\s*to\s*work\b/i,
+        /\bwork\s*authoriz\w*\b/i,
+        /\blegally\s*(entitled|permitted)\s*to\s*work\b/i,
+        /\bright\s*to\s*work\b/i,
+      ],
+      deny: [/sponsor/i],
+      type: ["select", "radio", "text"],
+      /**
+       * Profile or nothing.
+       *
+       * A wrong answer here is disqualifying: "No" to work authorisation, or
+       * "Yes" to needing sponsorship when the applicant does not, takes them out
+       * of the running before a human reads anything. Yet a null from this rule
+       * used to fall through to saved answers and then to the model — so one
+       * "No" banked on one portal was replayed as a negative answer across every
+       * application after it, which is the behaviour reported.
+       *
+       * There is no safe guess available here, and the model is the wrong tool
+       * for a legal declaration: it can only infer, and an inferred immigration
+       * status stated to an employer is a liability. Unanswered means the field
+       * is left empty and highlighted for the applicant.
+       */
+      profileOnly: true,
+      value: (p) => authorizedFor(p),   // stored answer, or a status that settles it
+      options: { Yes: ["yes", "i am", "authorized", "true"], No: ["no", "not authorized", "false"] },
     },
     {
-      key: "requireSponsorship", weight: 13, profileOnly: true, eligibility: true, matchOwn: true,
-      match: [/\b(?:require|need|seek)\w*\b.{0,120}\bsponsor/i,
-        /\bsponsorship\b.*\b(?:now|future|required|needed)\b/i,
-        /\b(?:immigration|visa)\s+(?:support|assistance)\b/i,
-        SPONSORSHIP_INVERTED, /^(?:(?:visa|employment|work)\s+)?sponsorship(?:\s+(?:required|needed))?\s*[?*]?$/i],
-      deny: [denyOwn(/\b(?:tuition|scholarship|funding|financial|conference|research|education)\b/i)],
-      type: ["select", "radio", "text", "checkbox"],
+      key: "requireSponsorship",
+      weight: 13,
+      match: [
+        /\b(require|need|seek)\w*\s*(visa\s*)?sponsor/i,
+        /\bsponsorship\b.*\b(now|future|require|need)\b/i,
+        /\bwill\s*you\s*.*sponsorship\b/i,
+        /\bimmigration\s*sponsorship\b/i,
+      ],
+      type: ["select", "radio", "text"],
+      /**
+       * Half of these questions are asked the other way round.
+       *
+       * "Will you require sponsorship?" and "Are you able to work without
+       * sponsorship?" want opposite answers from the same fact, and the stored
+       * value was written straight into both — so an applicant who needs no
+       * sponsorship was telling employers, on the second phrasing, that they
+       * could not work without it. That is a disqualifying answer, and the
+       * wrong one.
+       */
+      /**
+       * Profile or nothing.
+       *
+       * A wrong answer here is disqualifying: "No" to work authorisation, or
+       * "Yes" to needing sponsorship when the applicant does not, takes them out
+       * of the running before a human reads anything. Yet a null from this rule
+       * used to fall through to saved answers and then to the model — so one
+       * "No" banked on one portal was replayed as a negative answer across every
+       * application after it, which is the behaviour reported.
+       *
+       * There is no safe guess available here, and the model is the wrong tool
+       * for a legal declaration: it can only infer, and an inferred immigration
+       * status stated to an employer is a liability. Unanswered means the field
+       * is left empty and highlighted for the applicant.
+       */
+      profileOnly: true,
       value: (p, el, label) => {
-        const text = ownLabel(label);
-        // A free-text explanation needs its own saved answer, not Yes/No.
-        if (/\b(explain|describe|details|type of|what type|which)\b/i.test(text)) return null;
-        const required = sponsorshipFor(p);
-        if (!required) return null;
-        if (!SPONSORSHIP_INVERTED.test(text)) {
-          if (/\b(?:authori[sz]ed|eligible|right to work)\b/i.test(text)) return null;
-          return required;
-        }
-        if (required === "Yes") return "No";
-        if (/\b(work|authori[sz]|eligib|able|permitted|entitled)/i.test(text)) {
-          // "Able to work without sponsorship" requires both explicit facts.
-          return authorizedFor(p);
-        }
+        const stored = sponsorshipFor(p);
+        if (!stored) return null;   // unknown: leave it for the applicant
+        const text = String(label ?? "");
+        if (!SPONSORSHIP_INVERTED.test(text)) return stored;
+
+        const requiresSponsorship = /^y/i.test(stored);
+        if (requiresSponsorship) return "No";
+
+        // Some of these ask about authorisation in the same breath — "legally
+        // authorized to work without sponsorship" — and needing no sponsorship
+        // only answers half of that.
+        const authorized = authorizedFor(p);
+        if (/\bauthoriz|\beligible|\blegally\b/i.test(text) && authorized && !/^y/i.test(authorized)) return "No";
         return "Yes";
       },
-      options: { Yes: ["yes", "true", "i will require sponsorship", "i require sponsorship"],
-        No: ["no", "false", "i do not require sponsorship", "i don't require sponsorship"] },
+      options: { Yes: ["yes", "i will", "true"], No: ["no", "i do not", "i don't", "false"] },
     },
     {
       key: "visaStatus",
       weight: 10,
-      eligibility: true,
-      matchOwn: true,
-      match: [/\bvisa\s*(status|type)\b/i, /\bimmigration\s*status\b/i, /\bwork\s*permit\s*type\b/i,
-        /\bwork\s*authori[sz]ation\s*(?:type|status)\b/i],
+      match: [/\bvisa\s*(status|type)\b/i, /\bimmigration\s*status\b/i, /\bwork\s*permit\s*type\b/i],
       type: ["select", "text"],
       /**
        * Profile or nothing.
@@ -1469,6 +1500,119 @@
        */
       profileOnly: true,
       value: (p) => W(p).willingToRelocate || null,  // never assumed: a commitment to move
+      options: { Yes: ["yes", "willing", "true"], No: ["no", "not willing", "false"] },
+    },
+    /**
+     * Shift and schedule willingness.
+     *
+     * "Are you willing to work over 40 hours a week / Saturdays / Sundays /
+     * evening shifts?" had no rule at all, so none of these had a profile
+     * field behind them either. A field with no rule still gets answered —
+     * it falls through to whatever text was banked in the saved-answers
+     * cache for that exact question on some earlier application, or is left
+     * for the model to guess. Neither is the profile, so the value shown had
+     * nothing to do with what the applicant actually told Zapply. These are
+     * exactly the same shape of question as sponsorship and relocation —
+     * a commitment the employer will hold the applicant to — so they get the
+     * same treatment: profile or nothing, never a guess, never a stale
+     * answer replayed from a different application.
+     */
+    {
+      key: "willingToWorkOvertime",
+      weight: 11,
+      match: [
+        /\bwilling\b.{0,20}\bwork\b.{0,15}\bovertime\b/i,
+        /\bovertime\b.{0,20}\bwilling\b/i,
+        /\bwilling\b.{0,20}\bwork\b.{0,10}\b(over\s*)?(40|forty)\+?\s*hours?\b/i,
+        /\b(over\s*)?(40|forty)\+?\s*hours?\b.{0,15}\bweek\b.{0,15}\bwilling\b/i,
+        /\bable\b.{0,20}\bwork\b.{0,10}\b(over\s*)?(40|forty)\+?\s*hours?\b/i,
+      ],
+      type: ["select", "radio", "text"],
+      profileOnly: true,
+      value: (p) => W(p).willingToWorkOvertime || null,
+      options: { Yes: ["yes", "willing", "true"], No: ["no", "not willing", "false"] },
+    },
+    {
+      key: "willingToWorkSaturdays",
+      weight: 11,
+      match: [
+        /\bwilling\b.{0,20}\bwork\b.{0,10}\bsaturdays?\b/i,
+        /\bavailable\b.{0,20}\bwork\b.{0,10}\bsaturdays?\b/i,
+        /\bable\b.{0,20}\bwork\b.{0,10}\bsaturdays?\b/i,
+        /\bwork\s*saturdays?\b/i,
+      ],
+      type: ["select", "radio", "text"],
+      profileOnly: true,
+      value: (p) => W(p).willingToWorkSaturdays || null,
+      options: { Yes: ["yes", "willing", "true"], No: ["no", "not willing", "false"] },
+    },
+    {
+      key: "willingToWorkSundays",
+      weight: 11,
+      match: [
+        /\bwilling\b.{0,20}\bwork\b.{0,10}\bsundays?\b/i,
+        /\bavailable\b.{0,20}\bwork\b.{0,10}\bsundays?\b/i,
+        /\bable\b.{0,20}\bwork\b.{0,10}\bsundays?\b/i,
+        /\bwork\s*sundays?\b/i,
+      ],
+      type: ["select", "radio", "text"],
+      profileOnly: true,
+      value: (p) => W(p).willingToWorkSundays || null,
+      options: { Yes: ["yes", "willing", "true"], No: ["no", "not willing", "false"] },
+    },
+    {
+      /**
+       * A single combined "weekends" question is derived from the Saturday and
+       * Sunday answers rather than stored separately: asking the applicant to
+       * keep three overlapping preferences in sync invites them to drift out
+       * of agreement. Derived only when both agree — a real split preference
+       * has no safe single Yes/No answer, so it is left for the applicant.
+       */
+      key: "willingToWorkWeekends",
+      weight: 10,
+      match: [
+        /\bwilling\b.{0,20}\bwork\b.{0,10}\bweekends?\b/i,
+        /\bavailable\b.{0,20}\bwork\b.{0,10}\bweekends?\b/i,
+        /\bable\b.{0,20}\bwork\b.{0,10}\bweekends?\b/i,
+        /\bwork\s*weekends?\b/i,
+      ],
+      type: ["select", "radio", "text"],
+      profileOnly: true,
+      value: (p) => {
+        const sat = W(p).willingToWorkSaturdays;
+        const sun = W(p).willingToWorkSundays;
+        return sat && sun && sat === sun ? sat : null;
+      },
+      options: { Yes: ["yes", "willing", "true"], No: ["no", "not willing", "false"] },
+    },
+    {
+      key: "willingToWorkEveningShift",
+      weight: 11,
+      match: [
+        /\bwilling\b.{0,20}\bwork\b.{0,10}\b(evening|night|overnight|graveyard)\s*shifts?\b/i,
+        /\bavailable\b.{0,20}\b(evening|night|overnight|graveyard)\s*shifts?\b/i,
+        /\bable\b.{0,20}\bwork\b.{0,10}\b(evening|night|overnight|graveyard)\s*shifts?\b/i,
+        /\b(evening|night|overnight|graveyard)\s*shifts?\b/i,
+      ],
+      type: ["select", "radio", "text"],
+      profileOnly: true,
+      value: (p) => W(p).willingToWorkEvenings || null,
+      options: { Yes: ["yes", "willing", "true"], No: ["no", "not willing", "false"] },
+    },
+    {
+      key: "willingToTravel",
+      weight: 11,
+      match: [
+        /\bwilling\s*to\s*travel\b/i,
+        /\bable\s*to\s*travel\b/i,
+        /\bopen\s*to\s*travel(l?ing)?\b/i,
+        /\btravel\s*required\b/i,
+        /\bhow\s*much\b.{0,15}\btravel\b/i,
+      ],
+      deny: [/relocat/i],
+      type: ["select", "radio", "text"],
+      profileOnly: true,
+      value: (p) => W(p).willingToTravel || null,
       options: { Yes: ["yes", "willing", "true"], No: ["no", "not willing", "false"] },
     },
     {
@@ -1551,21 +1695,33 @@
         THIRD_PARTY,
         /\b(start|end|from|to|birth|dob|graduation|grad|hire|termination|expiry|expiration|issued|available|availability|joining|last\s*working)\b/i,
       ],
-      type: ["text", "date", "number"],
+      type: ["text", "date"],
       value: (p, el) => todayFor(el),
     },
     {
       key: "howDidYouHear",
-      profileOnly: true,
-      matchOwn: true,
       weight: 11,
-      match: [/\bhow\s*(?:did|do|have)\s*(?:you|u)\s*(hear|find|learn)\b/i, /\bsource\s*of\s*(referral|application)\b/i, /\bwhere\s*did\s*you\s*(hear|find)\b/i,
-        /^(?:source|source category|source type|source detail|source details|source sub[- ]?category|referral source|recruiting source)$/i,
-        /^(?:please\s+)?(?:specify|select)\s+(?:the\s+)?(?:source|source detail|source sub[- ]?category)$/i],
+      match: [/\bhow\s*did\s*you\s*(hear|find|learn)\b/i, /\bsource\s*of\s*(referral|application)\b/i, /\bwhere\s*did\s*you\s*(hear|find)\b/i],
       type: ["select", "text", "radio"],
-      value: () => "LinkedIn",   // Always use LinkedIn as the canonical source answer.
+      /**
+       * The profile's own choice, not a hardcoded one.
+       *
+       * This used to ignore `workAuth.howDidYouHear` entirely and always
+       * answer "LinkedIn", regardless of what the applicant picked in the
+       * ProfileEditor's own "How did you hear about us?" dropdown. Someone
+       * who chose "Indeed" or "Referral" there was told LinkedIn on every
+       * application anyway — the profile setting existed but did nothing.
+       * "LinkedIn" remains the fallback for a profile that has not set a
+       * source at all, since most lists offer it and it is the safest
+       * generic default.
+       */
+      value: (p) => W(p).howDidYouHear || "LinkedIn",
       // The matcher resolves that canonical answer against native selects,
-      // radio groups, Workday custom dropdowns and segmented controls.
+      // radio groups, Workday custom dropdowns and segmented controls — it
+      // opens the control and clicks the matching option rather than typing
+      // the word into the box, so a category/sub-category menu ("Social
+      // Media" -> "LinkedIn") still ends up on the specific answer, not the
+      // heading above it.
       // Many portals ask this in two steps: a category here ("Job Board") and
       // the actual source in a "Please specify" box that appears afterwards.
       // A stored answer of "LinkedIn" has to resolve to whichever category
@@ -1574,13 +1730,16 @@
         // Ordered most specific first. "Job board" used to outrank "social
         // media" and "professional network", so a list offering LinkedIn only
         // under one of those was answered with the wrong category.
-        LinkedIn: ["linkedin", "linked in", "social media", "social network", "job portal", "job portals", "job board", "job boards", "job site", "other"],
-        Indeed: ["indeed", "job portal", "job portals", "job board", "job boards", "online", "internet", "job site"],
+        LinkedIn: ["linkedin", "linked in", "professional network", "professional networking",
+                   "social media", "social network", "job board", "job boards", "job site",
+                   "online", "internet", "website"],
+        Indeed: ["indeed", "job board", "job boards", "online", "internet", "job site"],
         Glassdoor: ["glassdoor", "job board", "job boards", "online"],
         Monster: ["monster", "job board", "job boards", "online"],
         Dice: ["dice", "job board", "job boards", "online"],
         ZipRecruiter: ["ziprecruiter", "job board", "job boards", "online"],
         Naukri: ["naukri", "job board", "job boards", "online"],
+        "Job Board": ["job board", "job boards", "job site", "job sites", "online job board"],
         "Company Website": ["company website", "our web site", "our website", "career site", "careers page", "website", "online"],
         Referral: ["referral", "employee referral", "word of mouth", "friend", "personal"],
         "Employee Referral": ["employee referral", "referral", "word of mouth"],
@@ -1593,16 +1752,6 @@
         Google: ["google", "search engine", "online", "internet"],
         Other: ["other"],
       },
-    },
-    {
-      key: "applicationConsent", weight: 12, matchOwn: true,
-      match: [/\b(?:i\s+)?(?:agree|accept|consent|acknowledge)\b/i,
-        /\b(?:terms\s*(?:and|&)\s*conditions|privacy\s*(?:policy|notice)|data\s*(?:privacy|processing))\b/i],
-      deny: [denyOwn(/\b(?:disagree|decline|do not|don[’']?t|not agree|not accept|not consent|sponsor|authori[sz]|drug|background|marketing|newsletter|cookie|subscribe)\b/i)],
-      type: ["checkbox", "select", "radio"],
-      value: () => "Yes",
-      options: { Yes: ["yes", "i agree", "agree", "i accept", "accept", "i consent", "consent", "acknowledge", "true"],
-        No: ["no", "i do not agree", "disagree", "decline", "false"] },
     },
     {
       key: "securityClearance",
