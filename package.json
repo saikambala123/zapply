@@ -1,9 +1,10 @@
 {
   "name": "zapply",
-  "version": "1.13.12",
+  "version": "1.13.13",
   "private": true,
   "description": "Zapply \u2014 one-click job application autofill, tracking and AI answers.",
   "scripts": {
+    "test:browser-reliability": "node test/browser-reliability.spec.mjs",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",

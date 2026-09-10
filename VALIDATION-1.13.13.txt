@@ -1,0 +1,43 @@
+Zapply 1.13.13 validation
+========================
+
+The attached screen recording was sampled across its full 3.95-second duration.
+It shows a Workday How Did You Hear About Us root category list alternating with
+a loading state and returning to the same list without committing a value.
+
+Targeted fixture
+----------------
+PASS  The exact recorded categories are represented.
+PASS  All rows may be exposed only as Workday promptOption nodes.
+PASS  Root Search is not written when the category-tree shape is present.
+PASS  Job Board may show a loading state for 900 ms before LinkedIn appears.
+PASS  LinkedIn is selected and the menu closes.
+
+Regression suites
+-----------------
+PASS  JavaScript syntax checks (field map, matcher, content script, fixture)
+PASS  requested-fixes.spec.mjs (12 groups)
+PASS  self-id.spec.mjs
+PASS  workday-fields.spec.mjs
+PASS  held-answers.spec.mjs
+PASS  background.spec.mjs (42/42 checks)
+PASS  date-regressions.spec.mjs (4/4 checks)
+PASS  row-index.spec.mjs
+PASS  ui-regressions.spec.mjs (14 checks)
+
+Package checks
+--------------
+PASS  Chrome/Edge and Firefox packages created
+PASS  Source and packaged runtime files are byte-identical
+PASS  Both packaged manifests report version 1.13.13
+PASS  Packaged background uses https://zapply.vercel.app
+PASS  Chrome, Firefox, and full-source ZIP archives pass integrity checks
+
+Not executed locally
+--------------------
+- A live authenticated employer Workday tenant was not available. The new
+  deterministic fixture reproduces the category names, missing hierarchy
+  attributes, root Search control, loading state, and delayed LinkedIn child
+  visible in the supplied recording.
+- Playwright/browser suites require project dependencies that are not installed
+  in this workspace.
