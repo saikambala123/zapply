@@ -2460,6 +2460,18 @@
     return score < 150;
   }
 
+  function looksLikeWorkdaySourceRoot(options) {
+    const promptRows = options.filter((option) =>
+      /promptOption|promptExpandableNode/i.test(option?.getAttribute?.("data-automation-id") || "")
+    );
+    if (promptRows.length < 3) return false;
+    const categoryRows = promptRows.filter((option) =>
+      /\b(campus campaign|corporate website|direct source|job boards?|online recruiter|staffing agency|other)\b/i
+        .test(option.textContent || option.getAttribute?.("aria-label") || "")
+    );
+    return categoryRows.length >= 3;
+  }
+
   function optionScoreForTarget(option, targets, hint, primaryCount) {
     const rawText = option.textContent || option.getAttribute("aria-label") || option.getAttribute("data-value") || "";
     const text = normalizeChoiceText(rawText);
@@ -2563,16 +2575,20 @@
     }));
     let budget = 30;
     const fallbacks = [];
+    // Workday replaces a category with a loading indicator while it fetches
+    // the child prompt. The adapter's ordinary dropdown delay is intentionally
+    // short, but a source-tree branch needs long enough to survive that fetch.
+    const branchWait = Math.max(2500, waitMs);
     const resetTo = async (path) => {
       await closeOpenMenu();
-      const opened = await openMenu(session.el, waitMs);
+      const opened = await openMenu(session.el, branchWait);
       session.baseline = opened.baseline;
       let list = opened.options;
       for (const text of path) {
         const node = list.find((o) => textOf(o) === text && canBranch(o));
         if (!node) return [];
         node.click?.();
-        list = await changedOptions(session, list, waitMs);
+        list = await changedOptions(session, list, branchWait);
       }
       return list;
     };
@@ -2585,7 +2601,11 @@
       }
       if (path.length >= 5) return null;
       const parents = snapshot(list).filter((o) => o.branch)
-        .sort((a, b) => sourceChoiceScore(b.text) - sourceChoiceScore(a.text));
+        // Real parent rows first. Plain promptOption leaves are only bounded
+        // probes for tenants that omit all hierarchy attributes; trying those
+        // before a visible arrow needlessly commits and reopens the menu.
+        .sort((a, b) => (Number(b.parent) - Number(a.parent)) ||
+          (sourceChoiceScore(b.text) - sourceChoiceScore(a.text)));
       let first = true;
       for (const parent of parents) {
         if (--budget < 0) break;
@@ -2594,7 +2614,7 @@
         const node = list.find((o) => textOf(o) === parent.text && canBranch(o));
         if (!node) continue;
         node.click?.();
-        const children = await changedOptions(session, list, waitMs);
+        const children = await changedOptions(session, list, branchWait);
         if (!children.length || children.every((o, i) => o === list[i])) continue;
         const found = await visit(children, [...path, parent.text]);
         if (found) return found;
@@ -2679,13 +2699,19 @@
 
     let { best, bestScore } = pick(options);
     let searchUsed = null;
-    if (isLinkedIn(value) && bestScore < 150) {
+    // An explicit Workday source tree must be drilled before using its search
+    // input. Root search only covers the currently visible categories on some
+    // tenants, so typing LinkedIn produces a spinner, restores the same root
+    // list, and repeats without ever opening Job Board / Online Recruiter.
+    const sourceTree = isLinkedIn(value) &&
+      (options.some(isParentOption) || looksLikeWorkdaySourceRoot(options));
+    if (isLinkedIn(value) && bestScore < 150 && !sourceTree) {
       const search = findSearchInput(el, MENU.popup, MENU.baselineInputs);
       if (search) {
         searchUsed = search;
         el.__zapplySearchPending = true;
         setComboboxText(search, String(value));
-        const deadline = Date.now() + Math.max(1000, waitMs * 2);
+        const deadline = Date.now() + Math.max(2500, waitMs * 2);
         do {
           await wait(80);
           const filtered = menuOptions(session);
@@ -2694,14 +2720,14 @@
         } while (Date.now() < deadline);
         if (bestScore < 150) {
           setComboboxText(search, "");
-          await wait(Math.max(220, waitMs));
+          await wait(Math.max(700, waitMs));
           options = menuOptions(session);
           ({ best, bestScore } = pick(options));
         }
       }
     }
     if (isLinkedIn(value) && options.some(isSourceBranchCandidate) && (bestScore < 150 || isParentOption(best))) {
-      best = await findLinkedInOption(session, options, waitMs);
+      best = await findLinkedInOption(session, options, Math.max(2500, waitMs));
       bestScore = best ? sourceChoiceScore(best.textContent) : 0;
       options = menuOptions(session);
     }

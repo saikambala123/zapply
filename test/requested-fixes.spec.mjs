@@ -170,6 +170,44 @@ await test('Workday promptOption categories are drilled even without aria-expand
   assert.equal(f.selected(),'LinkedIn'); assert.equal(f.menu.children.length,0);
 });
 
+await test('recorded Workday category roots bypass Search and wait for async children',async()=>{
+  const b=boot();
+  const el=b.doc.body.appendChild(new N('button',{
+    'aria-haspopup':'listbox','aria-controls':'slow-source-menu','aria-label':'How Did You Hear About Us?','aria-expanded':'false'
+  },'Search'));
+  const menu=b.doc.body.appendChild(new N('div',{role:'listbox',id:'slow-source-menu'}));
+  const search=new N('input',{type:'search','aria-label':'Search'});
+  let searchWrites=0,selected='';
+  search.addEventListener('input',()=>{searchWrites++; menu.replaceChildren(search); setTimeout(renderRoot,900);});
+  const choose=(label)=>{selected=label;el.textContent=label;el.setAttribute('aria-expanded','false');menu.replaceChildren();};
+  const renderChildren=()=>{
+    menu.replaceChildren(search);
+    const linkedIn=new N('div',{role:'option','data-automation-id':'promptOption'},'LinkedIn');
+    linkedIn.addEventListener('click',()=>choose('LinkedIn'));
+    menu.append(linkedIn);
+  };
+  const renderRoot=()=>{
+    menu.replaceChildren(search);
+    for(const [label,parent] of [['Campus Campaign',false],['Corporate Website',true],['Direct Source',true],['Job Board',true],['Online Recruiter',true],['Other',true],['Staffing Agency',true]]){
+      // The recorded tenant exposes every row as promptOption even though the
+      // UI paints arrows beside its parent categories.
+      const option=new N('div',{role:'option','data-automation-id':'promptOption'},label);
+      option.addEventListener('click',()=>{
+        if(label==='Job Board'){menu.replaceChildren(search,new N('div',{'data-automation-id':'loading'},'Loading'));setTimeout(renderChildren,900);}
+        else if(parent){menu.replaceChildren(search);setTimeout(()=>{const leaf=new N('div',{role:'option'},`${label} option`);leaf.addEventListener('click',()=>choose(`${label} option`));menu.append(leaf);},50);}
+        else choose(label);
+      });
+      menu.append(option);
+    }
+  };
+  el.addEventListener('click',()=>{if(!menu.children.length){renderRoot();el.setAttribute('aria-expanded','true');}else{menu.replaceChildren();el.setAttribute('aria-expanded','false');}});
+  el.addEventListener('keydown',e=>{if(e.key==='Escape'){menu.replaceChildren();el.setAttribute('aria-expanded','false');}});
+  b.M.beginFillSession();
+  assert.equal(await b.M.setComboboxValue(el,'LinkedIn',100,{},'How Did You Hear About Us?'),true);
+  assert.equal(selected,'LinkedIn');
+  assert.equal(searchWrites,0,'root Search must not be used when category arrows are present');
+});
+
 await test('extension and AI writes stay out of Pending until the applicant edits them',async()=>{
   const b=boot(); b.app.state.runId=1; b.app.state.adapter={key:'workday',quirks:{}};
   b.app.state.session={responses:[]};
