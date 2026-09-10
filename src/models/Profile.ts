@@ -77,6 +77,18 @@ const WorkAuthSchema = new Schema(
     workAuthType: String,                                    // Citizen / Green Card / H-1B / F-1 OPT ...
     visaStatus: String,
     willingToRelocate: { type: String, default: "Yes" },
+    // Shift/schedule willingness — "Are you willing to work over 40 hours a
+    // week / Saturdays / Sundays / evening shifts?" and "Are you willing to
+    // travel?". Deliberately no default: unlike relocation or a background
+    // check, these are genuinely split across applicants, and a form that
+    // asks them is one the employer will hold the answer to. Left unset,
+    // the matching field-map rules leave the question blank for the
+    // applicant instead of guessing.
+    willingToWorkOvertime: String,
+    willingToWorkSaturdays: String,
+    willingToWorkSundays: String,
+    willingToWorkEvenings: String,
+    willingToTravel: String,
     remotePreference: String,
     availableStartDate: String,
     noticePeriod: String,

@@ -20,7 +20,7 @@ export const OPTIONS = () => cors();
  * a wrong answer is a false declaration they may not notice.
  */
 const IDENTITY_QUESTION_RE =
-  /(voluntary\s+self[-\s]?identification|self[-\s]?identification\s+of\s+disability|form\s*cc-?305|cc-?305|section\s*503|omb\s*control\s*number|voluntary\s+disclosure|equal\s+employment\s+opportunity|\bveteran\b|\bdisabilit(y|ies)\b|\bethnicity\b|\brace\b|\bgender\b|\bemployee\s*(id|number)\b|\bdate\s*of\s*birth\b|\bsocial\s*security\b|\bssn\b|\bsponsor|\bvisa\b|\bwork\s*authori[sz]|\bauthori[sz]\w*\b.{0,50}\bwork\b)/i;
+  /(voluntary\s+self[-\s]?identification|self[-\s]?identification\s+of\s+disability|form\s*cc-?305|cc-?305|section\s*503|omb\s*control\s*number|voluntary\s+disclosure|equal\s+employment\s+opportunity|\bveteran\b|\bdisabilit(y|ies)\b|\bethnicity\b|\brace\b|\bgender\b|\bemployee\s*(id|number)\b|\bdate\s*of\s*birth\b|\bsocial\s*security\b|\bssn\b)/i;
 
 /**
  * Premium — writes an answer to a custom application question using the
