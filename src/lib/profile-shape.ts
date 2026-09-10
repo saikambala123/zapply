@@ -427,7 +427,7 @@ export function toEducation(v: unknown) {
       if (rawDegree && normalizedDegree === "Other" && !field) notes.unshift(rawDegree);
 
       return {
-        school: str(o.school ?? o.institution ?? o.university ?? o.college ?? o.institute ?? o.schoolName),
+        school: str(o.school || o.institution || o.university || o.college || o.institute || o.schoolName || o.school_name),
         degree: normalizedDegree,
         fieldOfStudy: field,
         gpa: str(o.gpa ?? o.grade ?? o.cgpa ?? o.percentage ?? o.marks),
@@ -529,11 +529,6 @@ export function normalizeParsedResume(raw: any) {
       workAuthType: pickOption(raw?.workAuth?.workAuthType, WORK_AUTH_TYPE_OPTIONS),
       visaStatus: str(raw?.workAuth?.visaStatus),
       willingToRelocate: str(raw?.workAuth?.willingToRelocate),
-      willingToWorkOvertime: str(raw?.workAuth?.willingToWorkOvertime),
-      willingToWorkSaturdays: str(raw?.workAuth?.willingToWorkSaturdays),
-      willingToWorkSundays: str(raw?.workAuth?.willingToWorkSundays),
-      willingToWorkEvenings: str(raw?.workAuth?.willingToWorkEvenings),
-      willingToTravel: str(raw?.workAuth?.willingToTravel),
       availableStartDate: str(raw?.workAuth?.availableStartDate),
       noticePeriod: str(raw?.workAuth?.noticePeriod),
       over18: str(raw?.workAuth?.over18),

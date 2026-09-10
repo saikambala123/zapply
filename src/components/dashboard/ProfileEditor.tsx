@@ -652,11 +652,6 @@ export default function ProfileEditor({
               <Select label="Work authorization type" value={p.workAuth?.workAuthType} onChange={(v) => setPath("workAuth.workAuthType", v)}
                 options={["US Citizen", "Permanent Resident (Green Card)", "H-1B", "F-1 OPT", "F-1 CPT", "TN", "L-1", "EAD", "Other"]} />
               <Select label="Willing to relocate?" value={p.workAuth?.willingToRelocate} onChange={(v) => setPath("workAuth.willingToRelocate", v)} options={YESNO} />
-              <Select label="Willing to travel?" value={p.workAuth?.willingToTravel} onChange={(v) => setPath("workAuth.willingToTravel", v)} options={YESNO} />
-              <Select label="Willing to work over 40 hours a week?" value={p.workAuth?.willingToWorkOvertime} onChange={(v) => setPath("workAuth.willingToWorkOvertime", v)} options={YESNO} />
-              <Select label="Willing to work Saturdays?" value={p.workAuth?.willingToWorkSaturdays} onChange={(v) => setPath("workAuth.willingToWorkSaturdays", v)} options={YESNO} />
-              <Select label="Willing to work Sundays?" value={p.workAuth?.willingToWorkSundays} onChange={(v) => setPath("workAuth.willingToWorkSundays", v)} options={YESNO} />
-              <Select label="Willing to work evening shifts?" value={p.workAuth?.willingToWorkEvenings} onChange={(v) => setPath("workAuth.willingToWorkEvenings", v)} options={YESNO} />
               <Select label="Remote preference" value={p.workAuth?.remotePreference} onChange={(v) => setPath("workAuth.remotePreference", v)} options={["Remote", "Hybrid", "On-site", "No preference"]} />
               {/* Not type="date". The resume parser is explicitly allowed to return
                   free text here ("Immediately", "March 2026"), and a date input
