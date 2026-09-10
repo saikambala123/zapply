@@ -507,7 +507,20 @@
         (kind === "number" && types.includes("text")) ||
         (kind === "radio" && types.includes("select")) ||
         (kind === "date" && types.includes("text")) ||
-        (kind === "month" && types.includes("text"));
+        (kind === "month" && types.includes("text")) ||
+        // A <textarea> is a free-text box in every ATS that uses one — the
+        // same box a <input type=text> would be, just multi-line. `fieldKind`
+        // reports it as its own kind "textarea" so rules can opt in with
+        // type:["textarea"] for genuinely long answers (summary, cover
+        // letter), but every rule that only listed "text" was then invisible
+        // to a form that happened to render that one field as a textarea.
+        // That is exactly how "What date are you available to start?"
+        // (type: ["text","date","month"], no "textarea") came up blank and
+        // flagged as needing the applicant on portals that use a textarea
+        // for it — the rule never got the chance to run. A plain single-line
+        // answer is just as valid in a textarea as an input, so "text" rules
+        // are now eligible for both.
+        (kind === "textarea" && types.includes("text"));
       if (!typeOk) continue;
 
       // A denial may be a pattern or a predicate. The predicate form exists

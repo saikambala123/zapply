@@ -353,8 +353,33 @@
 
   const dateForField = (raw, el) => {
     const parsed = parseProfileDate(raw);
-    if (!parsed) return null;
     const type = String(el?.type || "").toLowerCase();
+
+    if (!parsed) {
+      /**
+       * Not a calendar date at all — "Immediately", "ASAP", "2 weeks notice".
+       *
+       * `availableStartDate` is the one date-shaped field the profile lets the
+       * applicant answer in their own words, because "when can you start" is
+       * routinely asked as a plain text box, not a picker, and "Immediately"
+       * is a completely valid answer to it. `parseProfileDate` only recognises
+       * actual calendar dates, so every non-date answer came back `null` here
+       * and the rule then reported the field as having nothing to give it —
+       * which is how a profile that plainly said "Immediately" left a
+       * required "What date are you available to start?" box empty and
+       * flagged as needing the applicant, right next to a Saturday/Sunday
+       * question the profile *did* answer.
+       *
+       * A native date/month picker still gets nothing rather than garbage —
+       * "Immediately" cannot become a calendar value, so those are left for
+       * the applicant exactly as before. A plain text box, including a
+       * textarea, gets the literal words instead of losing the answer.
+       */
+      if (type === "date" || type === "month") return null;
+      const literal = String(raw ?? "").trim();
+      return literal || null;
+    }
+
     if (type === "month") return parsed.month ? `${parsed.year}-${parsed.month}` : null;
     if (type === "date") return parsed.month ? `${parsed.year}-${parsed.month}-${parsed.day || "01"}` : null;
 
